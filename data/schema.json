@@ -6,7 +6,7 @@
   "properties": {
     "사업명": {
       "type": "string",
-      "description": "사업 명칭 (예: 클라우드 종합솔루션 지원사업(통합형 클라우드화))"
+      "description": "사업 명칭 (예: OO 종합솔루션 지원사업)"
     },
     "과제명": {
       "type": "string",
