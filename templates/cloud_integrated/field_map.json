@@ -1,0 +1,76 @@
+{
+  "entity_blocks": [
+    {
+      "name": "대표공급기업",
+      "data_path": "대표공급기업",
+      "start_row": 6,
+      "fields": [
+        {"offset": 0, "left": {"col": 3, "field": "기업명"}, "right": {"col": 9, "field": "사업자등록번호"}},
+        {"offset": 1, "left": {"col": 3, "field": "대표자명"}, "right": {"col": 9, "field": "법인등록번호"}},
+        {"offset": 2, "left": {"col": 3, "field": "본사정보"}, "right": {"col": 9, "field": "지역"}},
+        {"offset": 3, "left": {"col": 3, "field": "주요솔루션"}},
+        {"offset": 4, "left": {"col": 3, "field": "담당자.성명"}, "right": {"col": 9, "field": "담당자.E-mail"}},
+        {"offset": 5, "left": {"col": 3, "field": "담당자.부서"}, "right": {"col": 9, "field": "담당자.전화"}},
+        {"offset": 6, "left": {"col": 3, "field": "담당자.직위"}, "right": {"col": 9, "field": "담당자.휴대전화"}}
+      ]
+    },
+    {
+      "name": "클라우드사업자",
+      "data_path": "클라우드사업자",
+      "start_row": 13,
+      "fields": [
+        {"offset": 0, "left": {"col": 3, "field": "기업명"}, "right": {"col": 9, "field": "사업자등록번호"}},
+        {"offset": 1, "left": {"col": 3, "field": "대표자명"}, "right": {"col": 9, "field": "법인등록번호"}},
+        {"offset": 2, "left": {"col": 3, "field": "본사정보"}, "right": {"col": 9, "field": "지역"}},
+        {"offset": 3, "left": {"col": 3, "field": "담당자.성명"}, "right": {"col": 9, "field": "담당자.E-mail"}},
+        {"offset": 4, "left": {"col": 3, "field": "담당자.부서"}, "right": {"col": 9, "field": "담당자.전화"}},
+        {"offset": 5, "left": {"col": 3, "field": "담당자.직위"}, "right": {"col": 9, "field": "담당자.휴대전화"}}
+      ]
+    },
+    {
+      "name": "협력기관",
+      "data_path": "협력기관",
+      "start_row": 19,
+      "fields": [
+        {"offset": 0, "left": {"col": 3, "field": "기업명"}, "right": {"col": 9, "field": "사업자등록번호"}},
+        {"offset": 1, "left": {"col": 3, "field": "대표자명"}, "right": {"col": 9, "field": "법인등록번호"}},
+        {"offset": 2, "left": {"col": 3, "field": "본사정보"}, "right": {"col": 9, "field": "지역"}},
+        {"offset": 3, "left": {"col": 3, "field": "담당자.성명"}, "right": {"col": 9, "field": "담당자.E-mail"}},
+        {"offset": 4, "left": {"col": 3, "field": "담당자.부서"}, "right": {"col": 9, "field": "담당자.전화"}},
+        {"offset": 5, "left": {"col": 3, "field": "담당자.직위"}, "right": {"col": 9, "field": "담당자.휴대전화"}}
+      ]
+    }
+  ],
+  "company_lists": [
+    {
+      "name": "참여공급기업",
+      "data_path": "참여공급기업",
+      "data_start_row": 26,
+      "max_items": 3,
+      "columns": {
+        "1": "번호",
+        "2": "기업명",
+        "4": "대표자명",
+        "5": "전화",
+        "6": "휴대전화",
+        "8": "E-mail",
+        "10": "지역"
+      }
+    },
+    {
+      "name": "도입실증기업",
+      "data_path": "도입실증기업",
+      "data_start_row": 29,
+      "max_items": 5,
+      "columns": {
+        "1": "번호",
+        "2": "기업명",
+        "4": "대표자명",
+        "5": "전화",
+        "6": "휴대전화",
+        "8": "E-mail",
+        "10": "지역"
+      }
+    }
+  ]
+}

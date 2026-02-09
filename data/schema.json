@@ -1,0 +1,308 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "HWPX 사업계획서 입력 데이터",
+  "description": "2026년 클라우드 종합솔루션 지원사업 사업계획서에 입력되는 데이터 스키마. 커버 페이지(35x11 표)와 본문 섹션(1~9장)의 주요 입력 필드를 정의한다.",
+  "type": "object",
+  "properties": {
+    "사업명": {
+      "type": "string",
+      "description": "사업 명칭 (예: 클라우드 종합솔루션 지원사업(통합형 클라우드화))"
+    },
+    "과제명": {
+      "type": "string",
+      "description": "과제 명칭 - 개발할 솔루션의 전체 이름"
+    },
+    "사업개요": {
+      "type": "string",
+      "description": "과제내용 요약 기술"
+    },
+    "개발솔루션": {
+      "type": "array",
+      "description": "개발할 솔루션 기능 목록 (최대 5개)",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5
+    },
+    "수행기간": {
+      "type": "object",
+      "description": "솔루션 개발 및 실증 수행기간",
+      "properties": {
+        "개발시작": { "type": "string", "description": "개발 시작일 (예: '26.6.30)" },
+        "개발종료": { "type": "string", "description": "개발 종료일 (예: '27.6.30)" },
+        "개발기간": { "type": "string", "description": "개발 기간 (예: 12개월)" },
+        "실증시작": { "type": "string", "description": "실증 시작일 (예: '27.6.30)" },
+        "실증종료": { "type": "string", "description": "실증 종료일 (예: '27.12.31)" },
+        "실증기간": { "type": "string", "description": "실증 기간 (예: 6개월)" }
+      },
+      "required": ["개발시작", "개발종료", "실증시작", "실증종료"]
+    },
+    "대표공급기업": {
+      "$ref": "#/$defs/기관정보",
+      "description": "대표공급기업 정보"
+    },
+    "클라우드사업자": {
+      "$ref": "#/$defs/기관정보",
+      "description": "클라우드사업자 정보"
+    },
+    "협력기관": {
+      "$ref": "#/$defs/기관정보",
+      "description": "협력기관 정보"
+    },
+    "참여공급기업": {
+      "type": "array",
+      "description": "참여 공급기업 목록 (최대 3개)",
+      "items": { "$ref": "#/$defs/기업목록항목" },
+      "maxItems": 3
+    },
+    "도입실증기업": {
+      "type": "array",
+      "description": "도입(실증) 기업 목록 (최대 5개)",
+      "items": { "$ref": "#/$defs/기업목록항목" },
+      "maxItems": 5
+    },
+    "개발개요": {
+      "type": "object",
+      "description": "2.1 개발개요 표 (6x2)",
+      "properties": {
+        "어플리케이션명칭": { "type": "string" },
+        "어플리케이션소개": { "type": "string" },
+        "활용가능업종": { "type": "string" },
+        "활용가능공정": { "type": "string" },
+        "활용가능생산품목": { "type": "string" },
+        "활용기대효과": { "type": "string" }
+      }
+    },
+    "추진체계": {
+      "type": "object",
+      "description": "2.1 추진체계 (역할 분담)",
+      "properties": {
+        "역할목록": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "기관": { "type": "string" },
+              "역할": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "기능구성도": {
+      "type": "array",
+      "description": "솔루션별 기능 구성도",
+      "items": {
+        "type": "object",
+        "properties": {
+          "솔루션명": { "type": "string" },
+          "기능목록": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "대분류": { "type": "string" },
+                "중분류": { "type": "string" },
+                "소분류": { "type": "string" },
+                "기능명": { "type": "string" },
+                "개발구분": {
+                  "type": "string",
+                  "enum": ["전환개발", "신규개발", "기존활용"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "KPI": {
+      "type": "array",
+      "description": "3.1 핵심성과지표 (6x8 표)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "지표명": { "type": "string" },
+          "단위": { "type": "string" },
+          "현재수준": { "type": "string" },
+          "목표수준": { "type": "string" },
+          "측정방법": { "type": "string" }
+        }
+      }
+    },
+    "추가성과지표": {
+      "type": "array",
+      "description": "3.3 추가성과지표",
+      "items": {
+        "type": "object",
+        "properties": {
+          "지표명": { "type": "string" },
+          "단위": { "type": "string" },
+          "목표": { "type": "string" }
+        }
+      }
+    },
+    "사업화계획": {
+      "type": "object",
+      "description": "4장 사업화 지원계획",
+      "properties": {
+        "클라우드서비스적용계획": { "type": "string" },
+        "테스트계획": { "type": "string" },
+        "실증테스트계획": { "type": "string" },
+        "출시및사업화": { "type": "string" },
+        "품질관리방안": { "type": "string" }
+      }
+    },
+    "표준": {
+      "type": "object",
+      "description": "5장 표준기반 솔루션 개발",
+      "properties": {
+        "국내표준": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "표준명": { "type": "string" },
+              "적용내용": { "type": "string" }
+            }
+          }
+        },
+        "해외표준": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "표준명": { "type": "string" },
+              "적용내용": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "산출물목록": {
+      "type": "array",
+      "description": "6장 산출물 예정목록 (13x3 표)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "번호": { "type": "string" },
+          "산출물명": { "type": "string" },
+          "비고": { "type": "string" }
+        }
+      }
+    },
+    "추진일정": {
+      "type": "array",
+      "description": "7장 추진일정 (15x17 간트차트)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "단계": { "type": "string" },
+          "세부과업": { "type": "string" },
+          "시작월": { "type": "integer" },
+          "종료월": { "type": "integer" }
+        }
+      }
+    },
+    "사업비": {
+      "type": "object",
+      "description": "8장 사업비 구성",
+      "properties": {
+        "총사업비": { "type": "number", "description": "총사업비 (천원)" },
+        "정부출연금": { "type": "number", "description": "정부출연금 (천원)" },
+        "민간부담금_현금": { "type": "number", "description": "민간부담금 현금 (천원)" },
+        "민간부담금_현물": { "type": "number", "description": "민간부담금 현물 (천원)" },
+        "세부내역": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "비목": { "type": "string" },
+              "금액": { "type": "number" },
+              "비고": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "참여인력": {
+      "type": "object",
+      "description": "9장 참여인력",
+      "properties": {
+        "총괄책임자": {
+          "$ref": "#/$defs/인력정보"
+        },
+        "주요참여인력": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/인력정보" }
+        }
+      }
+    },
+    "서명문구": {
+      "type": "string",
+      "description": "커버 페이지 하단 서명 문구"
+    }
+  },
+  "required": [
+    "사업명", "과제명", "개발솔루션", "수행기간",
+    "대표공급기업", "클라우드사업자"
+  ],
+  "$defs": {
+    "기관정보": {
+      "type": "object",
+      "description": "기관/기업 기본 정보 (커버 페이지 블록)",
+      "properties": {
+        "기업명": { "type": "string" },
+        "사업자등록번호": { "type": "string", "pattern": "^[0-9]{3}-[0-9]{2}-[0-9]{5}$" },
+        "대표자명": { "type": "string" },
+        "법인등록번호": { "type": "string" },
+        "본사정보": { "type": "string", "description": "본사 주소" },
+        "지역": { "type": "string" },
+        "주요솔루션": { "type": "string" },
+        "담당자": {
+          "type": "object",
+          "properties": {
+            "성명": { "type": "string" },
+            "부서": { "type": "string" },
+            "직위": { "type": "string" },
+            "전화": { "type": "string" },
+            "휴대전화": { "type": "string" },
+            "E-mail": { "type": "string", "format": "email" }
+          }
+        }
+      },
+      "required": ["기업명", "대표자명"]
+    },
+    "기업목록항목": {
+      "type": "object",
+      "description": "참여공급기업/도입실증기업 목록 항목",
+      "properties": {
+        "번호": { "type": "string" },
+        "기업명": { "type": "string" },
+        "대표자명": { "type": "string" },
+        "전화": { "type": "string" },
+        "휴대전화": { "type": "string" },
+        "E-mail": { "type": "string" },
+        "지역": { "type": "string" }
+      },
+      "required": ["기업명"]
+    },
+    "인력정보": {
+      "type": "object",
+      "description": "참여인력 정보",
+      "properties": {
+        "성명": { "type": "string" },
+        "소속기관": { "type": "string" },
+        "직위": { "type": "string" },
+        "담당업무": { "type": "string" },
+        "참여율": { "type": "string", "description": "참여율 (%, 예: 100)" },
+        "학력": { "type": "string" },
+        "경력": { "type": "string" },
+        "주요이력": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["성명", "소속기관", "담당업무"]
+    }
+  }
+}

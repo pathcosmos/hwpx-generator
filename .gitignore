@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+output/
+output_*.hwpx
+tests/output_*
+_bridge_tmp.py
+*.tmp
+.claude/
+ref/
