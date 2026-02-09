@@ -2,18 +2,20 @@
 
 한컴오피스 한글(Hangul) 문서를 프로그래밍 방식으로 생성하는 도구입니다. 정부 사업계획서 등 복잡한 양식 문서의 자동 생성을 목표로 합니다.
 
-**현재 상태**: Milestone 1 완료
+**현재 상태**: Milestone 2 — 다중 템플릿 지원
 - 커버 페이지 93개 셀 XML 직접 채우기
 - COM 기반 텍스트 찾아바꾸기
 - PDF 자동 변환
 - SSIM 검증 통과 (0.9660, 기준 0.90)
+- **다중 템플릿 지원** — 임의의 HWPX 파일을 템플릿으로 등록하여 사용 가능
 
 ## 주요 기능
 
+- **다중 템플릿 지원** — 임의의 HWPX 파일을 템플릿으로 등록, 설정 기반 문서 생성
 - **템플릿 기반 HWPX 생성** — XML 셀 직접 수정 + COM 텍스트 교체의 하이브리드 방식
 - **PDF 자동 변환** — 한컴오피스 COM API를 통한 정확한 PDF 출력
 - **PDF 비교 검증** — SSIM(구조적 유사도) + 텍스트 일치도 자동 비교
-- **템플릿 구조 분석** — HWPX 파일의 표/셀/스타일 구조 추출
+- **템플릿 구조 분석** — HWPX 파일의 표/셀/스타일 구조 추출 + 설정 초안 자동 생성
 
 ## 아키텍처
 
@@ -139,10 +141,17 @@ pip install pywin32
 ### 4. 실행
 
 ```bash
-# 데이터를 적용하여 문서 생성 + PDF 변환
+# 데이터를 적용하여 문서 생성 + PDF 변환 (기본 cloud_integrated 템플릿)
 python3 src/generate_hwpx.py \
   --template ref/test_01.hwpx \
   --data data/sample_input.json \
+  --output output/
+
+# 다른 템플릿 설정으로 문서 생성
+python3 src/generate_hwpx.py \
+  --template ref/새양식.hwpx \
+  --template-dir templates/새양식/ \
+  --data data/새양식_input.json \
   --output output/
 
 # 템플릿을 그대로 PDF로 변환 (검증용)
@@ -171,11 +180,93 @@ python3 src/generate_hwpx.py \
 | 옵션 | 설명 |
 |------|------|
 | `--template, -t` | (필수) 템플릿 HWPX 파일 경로 |
+| `--template-dir` | 템플릿 설정 디렉토리 (기본: `templates/cloud_integrated/`) |
 | `--data, -d` | JSON 입력 데이터 파일 경로 |
 | `--output, -o` | 출력 디렉토리 (기본: `output`) |
 | `--pdf-only` | 데이터 없이 템플릿을 그대로 PDF로 변환 |
 | `--no-pdf` | PDF 생성 건너뛰기 |
 | `--compare, -c` | 비교할 참조 PDF 경로 |
+
+## 다중 템플릿 지원
+
+기본 제공되는 `cloud_integrated`(클라우드 종합솔루션 사업계획서) 외에 다른 한글 문서를 템플릿으로 등록하여 사용할 수 있습니다.
+
+### 템플릿 디렉토리 구조
+
+```
+templates/
+  cloud_integrated/            # 기본 템플릿 (test_01.hwpx용)
+    template.json              # 메타 정보 + 찾아바꾸기 매핑
+    field_map.json             # 커버 테이블 셀 좌표 매핑
+  새_양식_이름/                # 새 템플릿 추가 시
+    template.json
+    field_map.json
+```
+
+### template.json 형식
+
+각 템플릿 설정 디렉토리에는 `template.json`이 있어 찾아바꾸기 매핑과 메타 정보를 정의합니다.
+
+```jsonc
+{
+  "name": "cloud_integrated",
+  "description": "2026 클라우드 종합솔루션 지원사업 사업계획서",
+  "cover_table_index": 0,       // XML 셀 채우기 대상 표 인덱스
+  "replacements": [
+    {
+      "find": "원본 문서의 텍스트",    // COM 찾아바꾸기 대상
+      "data_key": "사업명"            // 입력 JSON의 키
+    },
+    {
+      "find": "원본의 기간 텍스트",
+      "data_key": "수행기간._개발",   // 상위 객체 참조
+      "format": " · 개발 : {개발시작} ~ {개발종료} ({개발기간})"  // 포맷 문자열
+    }
+  ]
+}
+```
+
+- **단순 치환**: `data_key`로 입력 데이터에서 값을 가져와 `find` 텍스트를 교체
+- **포맷 치환**: `format` 키가 있으면 `data_key`의 상위 객체를 사용하여 `{필드명}` 패턴을 채움
+
+### 새 템플릿 등록 워크플로우
+
+```bash
+# Step 1: HWPX 파일의 표 구조 분석
+python3 src/extract_template.py --hwpx ref/새양식.hwpx --all-tables
+
+# Step 2: 템플릿 설정 초안 자동 생성
+python3 src/extract_template.py \
+  --hwpx ref/새양식.hwpx \
+  --generate-template-config \
+  -o templates/새양식/
+
+# Step 3: 생성된 template.json, field_map.json 수동 검토 및 보정
+#   - cover_table_index 확인
+#   - replacements에 찾아바꾸기 항목 추가
+#   - field_map.json의 셀 좌표 검증
+
+# Step 4: 입력 데이터 JSON 작성 후 문서 생성
+python3 src/generate_hwpx.py \
+  --template ref/새양식.hwpx \
+  --template-dir templates/새양식/ \
+  --data data/새양식_input.json \
+  --output output/
+```
+
+### extract_template.py 옵션
+
+| 옵션 | 설명 |
+|------|------|
+| `--hwpx` | HWPX 파일 경로 (기본: `ref/test_01.hwpx`) |
+| `--cover` | 커버 페이지 추출 |
+| `--sections` | 본문 섹션 추출 |
+| `--styles` | 스타일 정보 추출 |
+| `--tables` | 주요 표 추출 |
+| `--all-tables` | 모든 표 요약 목록 출력 |
+| `--sample-data` | sample_input.json 생성 |
+| `--generate-template-config` | template.json + field_map.json 초안 자동 생성 |
+| `--output, -o` | 출력 파일/디렉토리 경로 |
 
 ## 구현 접근방식 비교
 
@@ -260,6 +351,7 @@ hwpx_generator/
 │   └── extract_template.py             # 템플릿 구조 분석
 ├── templates/
 │   └── cloud_integrated/
+│       ├── template.json               # 템플릿 메타 정보 + 찾아바꾸기 매핑
 │       └── field_map.json              # 커버 페이지 필드 매핑 설정
 ├── tests/
 │   ├── test_hwpx_editor.py             # HwpxEditor 단위 테스트 (11개)

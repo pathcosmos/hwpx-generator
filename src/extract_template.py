@@ -1,14 +1,14 @@
-"""참조 HWPX 문서에서 내용과 구조를 추출하는 도구.
+"""HWPX 문서에서 내용과 구조를 추출하는 도구.
 
-test_01.hwpx의 section0.xml과 header.xml을 파싱하여
+HWPX 파일의 section0.xml과 header.xml을 파싱하여
 문서 구조(커버 페이지, 본문 섹션, 표 등)를 JSON으로 추출한다.
+임의의 HWPX 파일을 --hwpx 인자로 지정할 수 있다.
 
 Usage:
-    python3 src/extract_template.py                    # 전체 구조 추출
-    python3 src/extract_template.py --cover            # 커버 페이지만
-    python3 src/extract_template.py --sections         # 본문 섹션만
-    python3 src/extract_template.py --styles           # 스타일 정보만
-    python3 src/extract_template.py --sample-data      # sample_input.json 생성
+    python3 src/extract_template.py --hwpx ref/test_01.hwpx             # 전체 구조 추출
+    python3 src/extract_template.py --hwpx ref/test_01.hwpx --cover     # 커버 페이지만
+    python3 src/extract_template.py --hwpx ref/test_01.hwpx --all-tables  # 모든 표 목록
+    python3 src/extract_template.py --hwpx ref/새양식.hwpx --generate-template-config -o templates/새양식/
 """
 
 import zipfile
@@ -565,11 +565,160 @@ def generate_sample_data(hwpx_path):
     return sample
 
 
+def extract_all_tables(hwpx_path):
+    """HWPX 파일에서 모든 표를 추출하여 요약 목록 반환."""
+    root = read_xml_from_hwpx(hwpx_path, 'Contents/section0.xml')
+    tables = root.findall('.//hp:tbl', NAMESPACES)
+
+    result = []
+    for i, tbl in enumerate(tables):
+        row_cnt = int(tbl.get('rowCnt', '0'))
+        col_cnt = int(tbl.get('colCnt', '0'))
+
+        # 첫 번째 셀의 텍스트를 미리보기로 추출
+        first_cell_text = ''
+        first_tc = tbl.find('.//hp:tc', NAMESPACES)
+        if first_tc is not None:
+            first_cell_text = get_cell_text(first_tc)[:50]
+
+        sz = tbl.find('hp:sz', NAMESPACES)
+        width = int(sz.get('width', '0')) if sz is not None else 0
+        height = int(sz.get('height', '0')) if sz is not None else 0
+
+        result.append({
+            'index': i,
+            'rowCnt': row_cnt,
+            'colCnt': col_cnt,
+            'width': width,
+            'height': height,
+            'preview': first_cell_text,
+        })
+
+    return result
+
+
+def generate_template_config(hwpx_path, output_dir):
+    """HWPX 파일을 분석하여 template.json과 field_map.json 초안을 생성.
+
+    Args:
+        hwpx_path: 분석할 HWPX 파일 경로
+        output_dir: 설정 파일을 저장할 디렉토리
+
+    Returns:
+        dict: 생성 결과 요약
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    root = read_xml_from_hwpx(hwpx_path, 'Contents/section0.xml')
+    all_tables = root.findall('.//hp:tbl', NAMESPACES)
+
+    # 가장 큰 표를 커버 테이블 후보로 선택
+    cover_idx = 0
+    max_cells = 0
+    for i, tbl in enumerate(all_tables):
+        rows = int(tbl.get('rowCnt', '0'))
+        cols = int(tbl.get('colCnt', '0'))
+        cells = rows * cols
+        if cells > max_cells:
+            max_cells = cells
+            cover_idx = i
+
+    cover_tbl = all_tables[cover_idx] if all_tables else None
+
+    # 커버 테이블에서 빈 셀 위치 분석 → field_map 초안 생성
+    entity_blocks = []
+    if cover_tbl is not None:
+        row_cnt = int(cover_tbl.get('rowCnt', '0'))
+        col_cnt = int(cover_tbl.get('colCnt', '0'))
+
+        # 셀 맵 구성
+        cell_map = {}
+        for tr in cover_tbl.findall('hp:tr', NAMESPACES):
+            for tc in tr.findall('hp:tc', NAMESPACES):
+                addr = tc.find('hp:cellAddr', NAMESPACES)
+                if addr is not None:
+                    r = int(addr.get('rowAddr', '0'))
+                    c = int(addr.get('colAddr', '0'))
+                    text = get_cell_text(tc)
+                    cell_map[(r, c)] = text
+
+        # 비어있는 셀들을 찾아 field_map 후보 생성
+        empty_cells = []
+        for (r, c), text in sorted(cell_map.items()):
+            if not text.strip():
+                # 왼쪽 또는 위쪽 셀의 텍스트를 라벨로 사용
+                label = cell_map.get((r, c - 1), '') or cell_map.get((r - 1, c), '')
+                label = label.strip().replace('\n', ' ')[:30]
+                empty_cells.append({
+                    'row': r,
+                    'col': c,
+                    'label_hint': label if label else f'row{r}_col{c}',
+                })
+
+        # 빈 셀이 있으면 단일 entity_block으로 구성
+        if empty_cells:
+            fields = []
+            for ec in empty_cells:
+                fields.append({
+                    'offset': ec['row'],
+                    'left': {'col': ec['col'], 'field': ec['label_hint']},
+                })
+            entity_blocks.append({
+                'name': 'cover_fields',
+                'data_path': 'cover_fields',
+                'start_row': 0,
+                'fields': fields,
+            })
+
+    # template.json 생성
+    template_name = Path(hwpx_path).stem
+    template_config = {
+        'name': template_name,
+        'description': f'{template_name} 템플릿 (자동 생성 — 검토 필요)',
+        'cover_table_index': cover_idx,
+        'replacements': [],
+    }
+
+    template_path = os.path.join(output_dir, 'template.json')
+    with open(template_path, 'w', encoding='utf-8') as f:
+        json.dump(template_config, f, ensure_ascii=False, indent=2)
+
+    # field_map.json 생성
+    field_map = {
+        'entity_blocks': entity_blocks,
+        'company_lists': [],
+    }
+
+    field_map_path = os.path.join(output_dir, 'field_map.json')
+    with open(field_map_path, 'w', encoding='utf-8') as f:
+        json.dump(field_map, f, ensure_ascii=False, indent=2)
+
+    return {
+        'template_json': template_path,
+        'field_map_json': field_map_path,
+        'total_tables': len(all_tables),
+        'cover_table_index': cover_idx,
+        'cover_table_size': f'{cover_tbl.get("rowCnt", "?")}x{cover_tbl.get("colCnt", "?")}' if cover_tbl is not None else 'N/A',
+        'empty_cells_found': len(empty_cells) if cover_tbl is not None else 0,
+    }
+
+
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='HWPX 참조 문서 구조 추출')
+    parser = argparse.ArgumentParser(
+        description='HWPX 참조 문서 구조 추출',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+사용 예시:
+  # 문서 구조 분석
+  python3 src/extract_template.py --hwpx ref/test_01.hwpx --tables
+
+  # 템플릿 설정 초안 자동 생성
+  python3 src/extract_template.py --hwpx ref/새양식.hwpx --generate-template-config -o templates/새양식/
+        """,
+    )
     parser.add_argument('--hwpx', default=str(HWPX_PATH),
-                        help='HWPX 파일 경로')
+                        help='HWPX 파일 경로 (기본: ref/test_01.hwpx)')
     parser.add_argument('--cover', action='store_true',
                         help='커버 페이지만 추출')
     parser.add_argument('--sections', action='store_true',
@@ -578,13 +727,29 @@ def main():
                         help='스타일 정보만 추출')
     parser.add_argument('--tables', action='store_true',
                         help='주요 표 추출')
+    parser.add_argument('--all-tables', action='store_true',
+                        help='모든 표 요약 목록 출력')
     parser.add_argument('--sample-data', action='store_true',
                         help='sample_input.json 생성')
+    parser.add_argument('--generate-template-config', action='store_true',
+                        help='template.json + field_map.json 초안 자동 생성')
     parser.add_argument('--output', '-o', default=None,
-                        help='출력 파일 경로 (기본: stdout)')
+                        help='출력 파일/디렉토리 경로 (기본: stdout)')
 
     args = parser.parse_args()
     hwpx = args.hwpx
+
+    if args.generate_template_config:
+        output_dir = args.output or '.'
+        result = generate_template_config(hwpx, output_dir)
+        print(f"템플릿 설정 파일 생성 완료:", file=sys.stderr)
+        print(f"  template.json: {result['template_json']}", file=sys.stderr)
+        print(f"  field_map.json: {result['field_map_json']}", file=sys.stderr)
+        print(f"  표 개수: {result['total_tables']}", file=sys.stderr)
+        print(f"  커버 테이블: index={result['cover_table_index']}, size={result['cover_table_size']}", file=sys.stderr)
+        print(f"  빈 셀 발견: {result['empty_cells_found']}개", file=sys.stderr)
+        print(f"\n※ 생성된 파일을 수동으로 검토하고 보정하세요.", file=sys.stderr)
+        return
 
     if args.cover:
         result = extract_cover_table(hwpx)
@@ -594,6 +759,8 @@ def main():
         result = extract_styles(hwpx)
     elif args.tables:
         result = extract_key_tables(hwpx)
+    elif args.all_tables:
+        result = extract_all_tables(hwpx)
     elif args.sample_data:
         result = generate_sample_data(hwpx)
     else:

@@ -11,8 +11,11 @@ HWPX 자동 생성 메인 스크립트
 7. 결과 리포트 출력
 
 Usage:
-    # 템플릿 기반 생성 (찾아바꾸기)
+    # 템플릿 기반 생성 (기본 cloud_integrated 템플릿 설정 사용)
     python3 src/generate_hwpx.py --template ref/test_01.hwpx --data data/sample_input.json --output output/
+
+    # 다른 템플릿 설정 디렉토리 지정
+    python3 src/generate_hwpx.py --template ref/새양식.hwpx --template-dir templates/새양식/ --data data/input.json --output output/
 
     # 템플릿을 그대로 PDF로 변환 (검증용)
     python3 src/generate_hwpx.py --template ref/test_01.hwpx --output output/ --pdf-only
@@ -45,52 +48,58 @@ def load_input_data(data_path):
         return json.load(f)
 
 
-def build_replacements(data):
-    """입력 데이터에서 찾아바꾸기 매핑 생성
+def load_template_config(template_dir):
+    """템플릿 설정(template.json) 로드
 
-    커버 페이지의 텍스트를 기반으로 교체할 텍스트 쌍을 구성합니다.
+    Args:
+        template_dir: template.json이 있는 디렉토리 경로
+
+    Returns:
+        dict: 템플릿 설정 (없으면 빈 dict)
+    """
+    config_path = os.path.join(template_dir, "template.json")
+    if not os.path.exists(config_path):
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_replacements(data, template_config):
+    """입력 데이터와 템플릿 설정에서 찾아바꾸기 매핑 생성
+
+    template.json의 replacements 배열을 기반으로 동적으로 매핑을 구성합니다.
+    각 항목에 "format" 키가 있으면 data_key의 하위 필드로 포맷팅합니다.
     """
     replacements = {}
 
-    # 사업명
-    if "사업명" in data:
-        replacements["클라우드 종합솔루션 지원사업(통합형 클라우드화)"] = data["사업명"]
+    for mapping in template_config.get("replacements", []):
+        find_text = mapping["find"]
+        data_key = mapping["data_key"]
 
-    # 과제명
-    if "과제명" in data:
-        replacements[
-            "웹 기반 설계자산(도면-문서) 통합 관리와 상태기반(CBM) 설비보전 기술이 결합된 LLM 융합 중소제조기업형 SaaS 플랫폼"
-        ] = data["과제명"]
-
-    # 사업개요
-    if "사업개요" in data:
-        replacements["과제내용에 대하여 간단히 요약 기술"] = data["사업개요"]
-
-    # 수행기간
-    if "수행기간" in data:
-        period = data["수행기간"]
-        if "개발시작" in period and "개발종료" in period:
-            dev_period = period.get("개발기간", "12개월")
-            old_dev = " · 솔루션 개발 : '26.6.30 ~ '27.6.30  (12개월)"
-            new_dev = f" · 솔루션 개발 : {period['개발시작']} ~ {period['개발종료']}  ({dev_period})"
-            replacements[old_dev] = new_dev
-        if "실증시작" in period and "실증종료" in period:
-            test_period = period.get("실증기간", "6개월")
-            old_test = " · 솔루션 실증 : '27.6.30 ~ '27.12.31 (6개월)"
-            new_test = f" · 솔루션 실증 : {period['실증시작']} ~ {period['실증종료']} ({test_period})"
-            replacements[old_test] = new_test
-
-    # 대표공급기업 정보
-    if "대표공급기업" in data:
-        company = data["대표공급기업"]
-        # 필드가 비어있는 경우에 해당하는 텍스트는 찾아바꾸기가 어려우므로
-        # 기업명 등 실제 텍스트가 있는 경우만 처리
+        if "format" in mapping:
+            # 포맷 문자열 처리: data_key의 상위 경로에서 하위 필드를 가져와 포맷
+            # 예: data_key="수행기간._개발" → data["수행기간"]을 사용하여 format 문자열 채움
+            parts = data_key.split(".")
+            parent_key = parts[0]
+            parent_data = data.get(parent_key)
+            if parent_data and isinstance(parent_data, dict):
+                try:
+                    replace_text = mapping["format"].format(**parent_data)
+                    replacements[find_text] = replace_text
+                except KeyError:
+                    pass
+        else:
+            # 단순 치환: data_key로 값을 직접 가져옴
+            value = data.get(data_key)
+            if value is not None and value != "":
+                replacements[find_text] = str(value)
 
     return replacements
 
 
 def generate_from_template(template_path, data_path, output_dir,
-                           generate_pdf=True, compare_pdf=None):
+                           generate_pdf=True, compare_pdf=None,
+                           template_dir=None):
     """템플릿 기반 HWPX 생성
 
     Args:
@@ -99,7 +108,10 @@ def generate_from_template(template_path, data_path, output_dir,
         output_dir: 출력 디렉토리
         generate_pdf: PDF도 생성할지 여부
         compare_pdf: 비교할 참조 PDF 경로 (None이면 비교 안함)
+        template_dir: 템플릿 설정 디렉토리 (None이면 cloud_integrated 사용)
     """
+    if template_dir is None:
+        template_dir = os.path.join(PROJECT_DIR, "templates", "cloud_integrated")
     os.makedirs(output_dir, exist_ok=True)
 
     output_hwpx = os.path.join(output_dir, "generated.hwpx")
@@ -127,6 +139,8 @@ def generate_from_template(template_path, data_path, output_dir,
         # 데이터 로드
         print(f"[1/4] 입력 데이터 로드 중...")
         data = load_input_data(data_path)
+        template_config = load_template_config(template_dir)
+        cover_table_index = template_config.get("cover_table_index", 0)
 
         # [STEP 2] XML 셀 채우기 (빈 셀에 기업 정보 입력)
         print(f"[2/4] XML 셀 채우기 중...")
@@ -136,12 +150,11 @@ def generate_from_template(template_path, data_path, output_dir,
             from src.field_mapper import load_field_map, build_cell_data
             from src.hwpx_editor import HwpxEditor
 
-            template_dir = os.path.join(PROJECT_DIR, "templates", "cloud_integrated")
             field_map = load_field_map(template_dir)
             cell_data = build_cell_data(data, field_map)
             if cell_data:
                 editor = HwpxEditor(output_hwpx)
-                table = editor.get_table(0)
+                table = editor.get_table(cover_table_index)
                 if table is not None:
                     xml_filled = editor.fill_cells(table, cell_data)
                     editor.save()
@@ -156,7 +169,7 @@ def generate_from_template(template_path, data_path, output_dir,
             shutil.copy2(template_path, output_hwpx)
 
         # [STEP 3] COM find-and-replace (사업명, 과제명 등 텍스트 교체)
-        replacements = build_replacements(data)
+        replacements = build_replacements(data, template_config)
         print(f"[3/4] COM 텍스트 교체 중... ({len(replacements)}개 항목)")
 
         # PrintMethod=0 적용 (COM이 올바른 인쇄설정으로 PDF 생성하도록)
@@ -220,11 +233,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 사용 예시:
+  # 데이터로 문서 생성 (기본 cloud_integrated 설정)
+  python3 src/generate_hwpx.py --template ref/test_01.hwpx --data data/sample_input.json --output output/
+
+  # 다른 템플릿 설정으로 문서 생성
+  python3 src/generate_hwpx.py --template ref/새양식.hwpx --template-dir templates/새양식/ --data data/input.json -o output/
+
   # 템플릿을 PDF로 변환 (검증용)
   python3 src/generate_hwpx.py --template ref/test_01.hwpx --output output/ --pdf-only
-
-  # 데이터로 문서 생성
-  python3 src/generate_hwpx.py --template ref/test_01.hwpx --data data/sample_input.json --output output/
 
   # PDF 비교 검증 포함
   python3 src/generate_hwpx.py --template ref/test_01.hwpx --output output/ --pdf-only --compare ref/test_01.pdf
@@ -240,6 +256,8 @@ def main():
                         help="데이터 없이 템플릿을 그대로 PDF로 변환")
     parser.add_argument("--no-pdf", action="store_true",
                         help="PDF 생성 건너뛰기")
+    parser.add_argument("--template-dir", default=None,
+                        help="템플릿 설정 디렉토리 (template.json, field_map.json 위치)")
     parser.add_argument("--compare", "-c", default=None,
                         help="비교할 참조 PDF 경로")
 
@@ -262,6 +280,7 @@ def main():
         output_dir=args.output,
         generate_pdf=generate_pdf,
         compare_pdf=args.compare,
+        template_dir=args.template_dir,
     )
 
     sys.exit(0 if success else 1)
