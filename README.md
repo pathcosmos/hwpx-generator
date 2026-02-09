@@ -2,12 +2,13 @@
 
 한컴오피스 한글(Hangul) 문서를 프로그래밍 방식으로 생성하는 도구입니다. 정부 사업계획서 등 복잡한 양식 문서의 자동 생성을 목표로 합니다.
 
-**현재 상태**: Milestone 2 — 다중 템플릿 지원
+**현재 상태**: Milestone 2 완료 — 다중 템플릿 지원 + 한컴오피스 호환성 강화
 - 커버 페이지 93개 셀 XML 직접 채우기
 - COM 기반 텍스트 찾아바꾸기
 - PDF 자동 변환
 - SSIM 검증 통과 (0.9660, 기준 0.90)
 - **다중 템플릿 지원** — 임의의 HWPX 파일을 템플릿으로 등록하여 사용 가능
+- **한컴오피스 호환성 강화** — XML 선언부 보존, ZIP 압축 방식 보존
 
 ## 주요 기능
 
@@ -297,6 +298,25 @@ python3 src/generate_hwpx.py \
 
 ## 핵심 기술 이슈 및 해결
 
+### XML 선언부 호환성
+
+**증상**: 생성된 HWPX 파일이 한컴오피스에서 열리지 않음
+
+**원인**: lxml의 기본 XML 직렬화가 한컴오피스와 호환되지 않는 형식을 생성:
+- 작은따옴표(`'`) 사용 (한컴오피스는 큰따옴표 `"` 필요)
+- `standalone="yes"` 누락
+- XML 선언부와 루트 요소 사이에 줄바꿈 삽입
+
+**해결**: `hwpx_editor.py`의 `serialize_xml()` 메서드가 원본 XML 선언부를 보존하여 직접 구성. `etree.tostring(xml_declaration=True)` 대신 원본 선언부를 문자열로 접합
+
+### ZIP 압축 방식 보존
+
+**증상**: HWPX 파일이 열리지 않거나 이미지가 깨짐
+
+**원인**: HWPX ZIP 엔트리별로 압축 방식이 다름 (`mimetype`, `version.xml`, 이미지 파일은 `ZIP_STORED`, 나머지는 `ZIP_DEFLATED`). 모든 엔트리를 동일하게 압축하면 한컴오피스가 인식하지 못함
+
+**해결**: `hwpx_editor.py`가 원본 ZIP의 각 엔트리별 `compress_type`을 기록하고, 저장 시 그대로 복원
+
 ### PrintMethod=4 버그
 
 **증상**: 119페이지 문서가 PDF로 변환하면 60페이지(가로 방향)로 출력됨
@@ -315,11 +335,7 @@ taskkill.exe /F /IM Hwp.exe
 
 ### 네임스페이스 보존
 
-HWPX의 XML은 12개 이상의 네임스페이스를 사용합니다. `ElementTree`는 네임스페이스 프리픽스를 `ns0:`, `ns1:`로 변환하여 한글이 파일을 인식하지 못합니다. **lxml** 사용이 필수입니다 — 원본 프리픽스(`hp:`, `hs:`, `hh:` 등)를 그대로 보존합니다.
-
-### HWPX ZIP 구조
-
-HWPX는 ZIP 아카이브이며, `mimetype` 파일이 **반드시 비압축(STORED)**이어야 합니다. 압축 시 한글이 파일을 열지 못합니다.
+HWPX의 XML은 12개 이상의 네임스페이스를 사용합니다. `xml.etree.ElementTree`는 네임스페이스 프리픽스를 `ns0:`, `ns1:`로 변환하여 한글이 파일을 인식하지 못합니다. **lxml** 사용이 필수입니다 — 원본 프리픽스(`hp:`, `hs:`, `hh:` 등)를 그대로 보존합니다.
 
 ## 프로젝트 구조
 
@@ -400,8 +416,12 @@ hwpx_generator/
 ### 단위 테스트
 
 ```bash
-# HwpxEditor 테스트 (11개)
+# HwpxEditor 테스트 (11개, WSL에서 실행)
 python3 -m pytest tests/test_hwpx_editor.py -v
+
+# 주의: 전체 테스트(pytest tests/)는 test_hwp_com_module.py가
+# Windows 전용이므로 WSL에서 sys.exit(1)로 중단됨.
+# 반드시 테스트 파일을 개별 지정할 것.
 ```
 
 테스트 항목:
@@ -412,6 +432,8 @@ python3 -m pytest tests/test_hwpx_editor.py -v
 - 네임스페이스 보존 확인
 - charPrIDRef(서식 참조) 보존 확인
 - mimetype 비압축(STORED) 확인
+- XML 선언부 보존 확인 (한컴오피스 호환)
+- ZIP 엔트리 압축 방식 보존 확인
 
 ### 통합 테스트 (전체 파이프라인)
 

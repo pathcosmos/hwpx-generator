@@ -11,9 +11,15 @@ Usage:
 """
 
 import os
+import re
 import zipfile
 
 from lxml import etree
+
+# 한컴오피스 HWPX 표준 XML 선언부.
+# lxml의 xml_declaration=True는 작은따옴표를 사용하고 standalone을 생략하며
+# 루트 요소 앞에 줄바꿈을 추가하는데, 한컴오피스는 이를 인식하지 못한다.
+HWPX_XML_DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?>'
 
 NAMESPACES = {
     'hp': 'http://www.hancom.co.kr/hwpml/2011/paragraph',
@@ -49,6 +55,15 @@ class HwpxEditor:
 
         with zipfile.ZipFile(hwpx_path, 'r') as zf:
             section_data = zf.read('Contents/section0.xml')
+            # 각 엔트리의 원본 압축 방식 보존
+            self._compress_types = {
+                info.filename: info.compress_type for info in zf.infolist()
+            }
+
+        # 원본 XML 선언부 보존 (한컴오피스 호환성)
+        raw_text = section_data.decode('utf-8')
+        m = re.match(r'(<\?xml\s[^?]*\?>)', raw_text)
+        self._xml_decl = m.group(1) if m else HWPX_XML_DECL
 
         self.root = etree.fromstring(section_data)
 
@@ -140,8 +155,23 @@ class HwpxEditor:
                 count += 1
         return count
 
+    def serialize_xml(self):
+        """section0.xml을 한컴오피스 호환 바이트열로 직렬화한다.
+
+        lxml의 기본 xml_declaration은 한컴오피스와 호환되지 않으므로
+        원본 XML 선언부를 보존하여 직접 구성한다.
+
+        Returns:
+            bytes: UTF-8 인코딩된 XML 바이트열
+        """
+        body = etree.tostring(self.root, xml_declaration=False, encoding='unicode')
+        return (self._xml_decl + body).encode('utf-8')
+
     def save(self, output_path=None):
         """수정된 section0.xml을 포함하여 HWPX ZIP을 다시 생성한다.
+
+        원본 ZIP의 엔트리 순서와 각 파일의 압축 방식(STORED/DEFLATED)을
+        그대로 유지한다. 한컴오피스는 이 형식에 민감하다.
 
         Args:
             output_path: 저장 경로 (None이면 원본 덮어쓰기)
@@ -157,16 +187,13 @@ class HwpxEditor:
                     data = zin.read(item.filename)
 
                     if item.filename == 'Contents/section0.xml':
-                        data = etree.tostring(
-                            self.root,
-                            xml_declaration=True,
-                            encoding='UTF-8',
-                        )
+                        data = self.serialize_xml()
                         item.file_size = len(data)
 
-                    if item.filename == 'mimetype':
-                        zout.writestr(item, data, compress_type=zipfile.ZIP_STORED)
-                    else:
-                        zout.writestr(item, data, compress_type=item.compress_type)
+                    # 원본 압축 방식 보존
+                    compress = self._compress_types.get(
+                        item.filename, item.compress_type
+                    )
+                    zout.writestr(item, data, compress_type=compress)
 
         os.replace(tmp_path, output_path)
