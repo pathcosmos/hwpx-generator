@@ -11,7 +11,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.hwpx_editor import HwpxEditor, NAMESPACES
 
+_PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 REF_HWPX = os.path.join(os.path.dirname(__file__), '..', 'ref', 'test_01.hwpx')
+FORM_HWPX = os.path.join(_PROJECT_ROOT, 'form_to_fillout.hwpx')
 
 
 @pytest.fixture
@@ -130,6 +132,42 @@ def test_charPrIDRef_preserved(editor, cover_table):
     editor.set_cell_text(cover_table, 6, 3, 'style test')
 
     assert run.get('charPrIDRef') == original_ref
+
+
+@pytest.fixture
+def form_editor():
+    if not os.path.exists(FORM_HWPX):
+        pytest.skip('form_to_fillout.hwpx not found')
+    return HwpxEditor(FORM_HWPX)
+
+
+def test_inject_marker_no_nested_p(form_editor):
+    """inject_marker는 hs:sec 레벨에 hp:p를 삽입해야 한다 (hp:p 중첩 금지)."""
+    ok = form_editor.inject_marker(0, '##TEST_MARKER##')
+    assert ok is True
+
+    # 마커 텍스트 확인
+    found = False
+    for t in form_editor.root.findall('.//hp:t', NAMESPACES):
+        if t.text == '##TEST_MARKER##':
+            found = True
+            # 마커의 hp:p 부모가 hs:sec의 직속 자식인지 확인
+            run = t.getparent()
+            p = run.getparent()
+            sec = p.getparent()
+            assert p.tag.endswith('}p'), f"Expected hp:p, got {p.tag}"
+            assert sec.tag.endswith('}sec'), \
+                f"Marker hp:p parent should be hs:sec, got {sec.tag}"
+    assert found, "Marker text not found in document"
+
+    # hp:p 중첩이 없어야 한다
+    nested = form_editor.root.findall('.//hp:p/hp:p', NAMESPACES)
+    assert len(nested) == 0, f"Found {len(nested)} nested hp:p elements"
+
+
+def test_inject_marker_out_of_range(form_editor):
+    assert form_editor.inject_marker(-1, '##BAD##') is False
+    assert form_editor.inject_marker(9999, '##BAD##') is False
 
 
 def test_mimetype_stored(editor, cover_table):

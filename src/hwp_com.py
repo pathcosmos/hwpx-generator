@@ -328,6 +328,84 @@ class HwpController:
         """표에서 이전 셀로 이동"""
         self._hwp.HAction.Run("TableLeftCell")
 
+    # --- Cursor movement (extended) ---
+
+    def move_next_para(self):
+        """다음 문단으로 이동"""
+        self._hwp.HAction.Run("MoveNextParaBegin")
+
+    def move_para_end(self):
+        """현재 문단 끝으로 이동"""
+        self._hwp.HAction.Run("MoveLineEnd")
+
+    # --- Find ---
+
+    def find_text(self, text, direction=0):
+        """텍스트를 찾아 커서를 이동한다.
+
+        Args:
+            text: 찾을 텍스트
+            direction: 0=앞으로, 1=뒤로
+
+        Returns:
+            bool: 찾았으면 True
+        """
+        hwp = self._hwp
+        hwp.HAction.GetDefault("RepeatFind", hwp.HParameterSet.HFindReplace.HSet)
+        fr = hwp.HParameterSet.HFindReplace
+        fr.FindString = text
+        fr.Direction = direction
+        fr.IgnoreMessage = 1
+        fr.FindType = 1  # 찾기만 (바꾸지 않음)
+        return hwp.HAction.Execute("RepeatFind", hwp.HParameterSet.HFindReplace.HSet)
+
+    # --- Page/section control ---
+
+    def insert_page_break(self):
+        """페이지 나누기 삽입"""
+        self._hwp.HAction.Run("BreakPage")
+
+    def insert_section_break(self):
+        """구역 나누기 삽입"""
+        self._hwp.HAction.Run("BreakSection")
+
+    # --- Cell formatting ---
+
+    def set_cell_background(self, r, g, b):
+        """현재 셀의 배경색을 설정한다.
+
+        Args:
+            r, g, b: RGB 색상값 (0-255)
+        """
+        hwp = self._hwp
+        hwp.HAction.GetDefault("CellBorderFill", hwp.HParameterSet.HCellBorderFill.HSet)
+        pset = hwp.HParameterSet.HCellBorderFill
+        pset.FillAttr.Type = 1
+        pset.FillAttr.WindowsBrush = 1
+        pset.FillAttr.WinBrushFaceColor = self.rgb_color(r, g, b)
+        pset.FillAttr.WinBrushFaceStyle = 0
+        hwp.HAction.Execute("CellBorderFill", hwp.HParameterSet.HCellBorderFill.HSet)
+
+    @staticmethod
+    def rgb_color(r, g, b):
+        """RGB를 한컴 COM BGR 정수로 변환한다."""
+        return r | (g << 8) | (b << 16)
+
+    # --- Selection ---
+
+    def select_all(self):
+        """전체 선택"""
+        self._hwp.HAction.Run("SelectAll")
+
+    def delete_selection(self):
+        """선택 영역 삭제"""
+        self._hwp.HAction.Run("Delete")
+
+    def select_line(self):
+        """현재 줄 선택"""
+        self._hwp.HAction.Run("MoveLineBegin")
+        self._hwp.HAction.Run("MoveSelLineEnd")
+
     # --- Find and replace ---
 
     def find_and_replace(self, find_text, replace_text):

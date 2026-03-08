@@ -1,0 +1,88 @@
+{
+  "_comment": "양식(form_to_fillout.hwpx) ↔ MD(business_plan_v2.md) 섹션 매핑",
+  "template_file": "form_to_fillout.hwpx",
+  "source_file": "business_plan_v2.md",
+
+  "cover_data": {
+    "_comment": "표지(T0) 고정값 + MD에서 추출",
+    "기관명": "동연에스엔티",
+    "업종업태": "소프트웨어 개발 및 공급업",
+    "공동수행_기관1": "해당없음 (단독수행)",
+    "공동수행_기관2": "해당없음 (단독수행)",
+    "사업비_기관명": "동연에스엔티"
+  },
+
+  "summary_extraction": {
+    "_comment": "과제요약서(T2) — MD 섹션 'summary'에서 추출",
+    "source_section": "summary",
+    "field_mapping": {
+      "과제명": "## 1. 과 제 명",
+      "과제요약": "## 1-2. 과제요약",
+      "과제목표": "## 5. 과제 목표",
+      "개발내용": "## 6. 개발내용",
+      "수행방법": "## 7. 과제 수행 방법",
+      "사업화전략": "## 8. 사업화전략",
+      "최종결과물": "## 9. 최종결과물",
+      "기대효과": "## 10. 기대효과"
+    }
+  },
+
+  "narrative_sections": [
+    {
+      "section_id": "1",
+      "marker": "##SEC1_CONTENT##",
+      "title": "1. 과제의 필요성",
+      "md_section": "1",
+      "insert_after_table": 3,
+      "max_pages": 6,
+      "strategy": "핵심 5개 테이블만 유지, 나머지 텍스트 요약"
+    },
+    {
+      "section_id": "2",
+      "marker": "##SEC2_CONTENT##",
+      "title": "2. 관련 현황",
+      "md_section": "2",
+      "insert_after_table": 5,
+      "max_pages": 8,
+      "strategy": "기술/시장/경쟁 각 1-2개 핵심 테이블, 요약 텍스트"
+    },
+    {
+      "section_id": "3",
+      "marker": "##SEC3_CONTENT##",
+      "title": "3. 과제의 목표 및 내용",
+      "md_section": "3",
+      "insert_after_table": 8,
+      "max_pages": 10,
+      "strategy": "모듈 개요 테이블 + 모듈별 3-4줄 요약"
+    },
+    {
+      "section_id": "4",
+      "marker": "##SEC4_CONTENT##",
+      "title": "4. 추진 방법, 전략 및 체계",
+      "md_section": "4",
+      "insert_after_table": 13,
+      "max_pages": 8,
+      "strategy": "방법론 + 파일럿 + 조직도 핵심만"
+    },
+    {
+      "section_id": "5",
+      "marker": "##SEC5_CONTENT##",
+      "title": "5. 사업화 전략",
+      "md_section": "5",
+      "insert_after_table": 16,
+      "max_pages": 6,
+      "strategy": "4단계 전략 + 매출 기본 시나리오만"
+    }
+  ],
+
+  "fixed_values": {
+    "T13_researcher_co": "해당 사항 없음 (주관기관 단독 수행)",
+    "T20_budget_co": "해당 사항 없음 (주관기관 단독 수행)"
+  },
+
+  "delete_pages": {
+    "_comment": "작성요령 페이지(T1) — 제출용에서 삭제",
+    "table_index": 1,
+    "action": "delete_via_com"
+  }
+}

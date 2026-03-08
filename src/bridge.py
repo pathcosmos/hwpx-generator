@@ -9,7 +9,7 @@ import os
 import sys
 import zipfile
 
-WIN_PYTHON = "/mnt/c/Users/lanco/AppData/Local/Microsoft/WindowsApps/python.exe"
+WIN_PYTHON = "python"  # cmd.exe 경유로 실행 — PATH에서 해석됨
 
 
 def wsl_to_win_path(wsl_path):
@@ -233,16 +233,44 @@ from src.hwp_com import HwpController
 operations = json.loads({repr(ops_json)})
 hwp = HwpController(visible=False)
 try:
-    for op in operations:
+    pending_char = None
+    texts_in_para = 0
+    for oi, op in enumerate(operations):
         cmd = op["op"]
         if cmd == "insert_text":
-            hwp.insert_text(op["text"])
+            texts_in_para += 1
+            text = op["text"]
+            hwp.insert_text(text)
+            if pending_char and text:
+                sole = (texts_in_para == 1)
+                if sole:
+                    for j in range(oi + 1, min(oi + 6, len(operations))):
+                        nc = operations[j]["op"]
+                        if nc in ("line_break", "page_break", "set_para_shape"):
+                            break
+                        if nc == "insert_text":
+                            sole = False
+                            break
+                if sole:
+                    hwp._hwp.HAction.Run("MoveParaBegin")
+                    hwp._hwp.HAction.Run("MoveSelParaEnd")
+                    hwp.set_char_shape(**pending_char)
+                    hwp._hwp.HAction.Run("Cancel")
+                    hwp._hwp.HAction.Run("MoveParaEnd")
+                else:
+                    end_pos = hwp._hwp.GetPos()
+                    for _ in range(len(text)):
+                        hwp._hwp.HAction.Run("MoveSelLeft")
+                    hwp.set_char_shape(**pending_char)
+                    hwp._hwp.HAction.Run("Cancel")
+                    hwp._hwp.SetPos(*end_pos)
         elif cmd == "line_break":
+            texts_in_para = 0
             hwp.insert_line_break()
         elif cmd == "set_char_shape":
-            kwargs = {{k: v for k, v in op.items() if k != "op"}}
-            hwp.set_char_shape(**kwargs)
+            pending_char = {{k: v for k, v in op.items() if k != "op"}}
         elif cmd == "set_para_shape":
+            texts_in_para = 0
             kwargs = {{k: v for k, v in op.items() if k != "op"}}
             hwp.set_para_shape(**kwargs)
         elif cmd == "insert_table":
@@ -251,6 +279,197 @@ try:
             hwp.fill_table(op["data"])
     hwp.save_as(r"{win_output}", "HWPX")
 {pdf_line}
+    print("OK", flush=True)
+finally:
+    hwp.quit()
+'''
+    return _run_inline_script(script, timeout=timeout)
+
+
+def fill_template(hwpx_path, section_ops_list, output_hwpx, output_pdf=None,
+                  timeout=1200):
+    """마커 기반 템플릿 채우기 — 섹션별 순차 실행.
+
+    각 섹션은 다음 순서로 처리된다:
+    1. 마커 텍스트를 찾아 커서 이동
+    2. 마커가 포함된 줄 선택 및 삭제
+    3. 오퍼레이션 리스트 실행 (텍스트/테이블/서식 삽입)
+    4. 중간 저장
+
+    Args:
+        hwpx_path: 마커가 삽입된 HWPX 파일의 WSL 경로
+        section_ops_list: [{marker: str, ops: [dict]}, ...] 섹션별 오퍼레이션
+        output_hwpx: 출력 HWPX 파일의 WSL 경로
+        output_pdf: 출력 PDF 파일의 WSL 경로 (None이면 생략)
+        timeout: 실행 제한 시간 (초)
+
+    Returns:
+        bool: 성공 여부
+    """
+    win_hwpx = wsl_to_win_path(hwpx_path)
+    win_output = wsl_to_win_path(output_hwpx)
+
+    ops_json = json.dumps(section_ops_list, ensure_ascii=False)
+
+    pdf_line = ""
+    if output_pdf:
+        win_pdf = wsl_to_win_path(output_pdf)
+        pdf_line = f'''
+    print("Saving PDF...", flush=True)
+    hwp.save_as_pdf(r"{win_pdf}")'''
+
+    script = f'''\
+import sys, os, json, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.hwp_com import HwpController
+
+section_ops_list = json.loads({repr(ops_json)})
+
+hwp = HwpController(visible=True)
+try:
+    hwp.open(r"{win_hwpx}")
+    pages_before = hwp.get_page_count()
+    print(f"Opened: {{pages_before}} pages", flush=True)
+
+    for si, section in enumerate(section_ops_list):
+        marker = section["marker"]
+        ops = section["ops"]
+        print(f"Section {{si+1}}/{{len(section_ops_list)}}: {{marker}} ({{len(ops)}} ops)", flush=True)
+
+        # 1. 문서 처음으로 이동
+        hwp.move_to_start()
+
+        # 2. 마커 찾기
+        found = hwp.find_text(marker)
+        if not found:
+            print(f"  WARNING: marker '{{marker}}' not found, skipping", flush=True)
+            continue
+
+        # 3. 마커가 포함된 줄 선택 및 삭제
+        hwp._hwp.HAction.Run("MoveLineBegin")
+        hwp._hwp.HAction.Run("MoveSelLineEnd")
+        hwp._hwp.HAction.Run("Delete")
+
+        # 3.5. 스타일을 '바탕글'로 리셋 (테이블 스타일 상속 방지)
+        try:
+            hwp._hwp.HAction.GetDefault("Style", hwp._hwp.HParameterSet.HStyle.HSet)
+            hwp._hwp.HParameterSet.HStyle.StyleName = "바탕글"
+            hwp._hwp.HAction.Execute("Style", hwp._hwp.HParameterSet.HStyle.HSet)
+        except Exception:
+            pass  # 스타일 리셋 실패해도 오퍼레이션 실행 계속
+
+        # 4. 오퍼레이션 실행 (post-format 방식)
+        # HWP COM의 CreateAction("InsertText")는 set_char_shape의 입력 서식을
+        # 무시하므로, 텍스트 삽입 후 선택 → 서식 적용 → 커서 복원 방식 사용.
+        # 최적화: 단일 서식 문단은 MoveParaBegin/End (O(1)),
+        #         혼합 서식 문단의 인라인 런은 MoveSelLeft×N (짧은 텍스트).
+        err_count = 0
+        pending_char = None
+        texts_in_para = 0
+        for oi, op in enumerate(ops):
+            cmd = op["op"]
+            try:
+                if cmd == "insert_text":
+                    texts_in_para += 1
+                    text = op["text"]
+                    hwp.insert_text(text)
+                    if pending_char and text:
+                        # 단일 텍스트 문단 여부 판별 (lookahead)
+                        sole = (texts_in_para == 1)
+                        if sole:
+                            for j in range(oi + 1, min(oi + 6, len(ops))):
+                                nc = ops[j]["op"]
+                                if nc in ("line_break", "page_break", "set_para_shape"):
+                                    break
+                                if nc == "insert_text":
+                                    sole = False
+                                    break
+                        if sole:
+                            hwp._hwp.HAction.Run("MoveParaBegin")
+                            hwp._hwp.HAction.Run("MoveSelParaEnd")
+                            hwp.set_char_shape(**pending_char)
+                            hwp._hwp.HAction.Run("Cancel")
+                            hwp._hwp.HAction.Run("MoveParaEnd")
+                        else:
+                            end_pos = hwp._hwp.GetPos()
+                            for _ in range(len(text)):
+                                hwp._hwp.HAction.Run("MoveSelLeft")
+                            hwp.set_char_shape(**pending_char)
+                            hwp._hwp.HAction.Run("Cancel")
+                            hwp._hwp.SetPos(*end_pos)
+                elif cmd == "line_break":
+                    texts_in_para = 0
+                    hwp.insert_line_break()
+                elif cmd == "page_break":
+                    texts_in_para = 0
+                    hwp._hwp.HAction.Run("BreakPage")
+                elif cmd == "set_char_shape":
+                    pending_char = {{k: v for k, v in op.items() if k != "op"}}
+                elif cmd == "set_para_shape":
+                    texts_in_para = 0
+                    kwargs = {{k: v for k, v in op.items() if k != "op"}}
+                    hwp.set_para_shape(**kwargs)
+                elif cmd == "insert_table":
+                    hwp.insert_table(op["rows"], op["cols"])
+                elif cmd == "fill_table":
+                    hwp.fill_table(op["data"])
+                elif cmd == "set_cell_background":
+                    hwp.set_cell_background(op["r"], op["g"], op["b"])
+            except Exception as e:
+                err_count += 1
+                if err_count <= 3:
+                    print(f"  WARNING op#{{oi}} {{cmd}}: {{e}}", flush=True)
+                elif err_count == 4:
+                    print(f"  (suppressing further warnings)", flush=True)
+        if err_count:
+            print(f"  {{err_count}} ops failed in this section", flush=True)
+
+        # 5. 중간 저장
+        hwp.save_as(r"{win_output}", "HWPX")
+        pages_now = hwp.get_page_count()
+        print(f"  Saved ({{pages_now}} pages)", flush=True)
+
+    pages_final = hwp.get_page_count()
+    print(f"Final: {{pages_final}} pages", flush=True)
+{pdf_line}
+    print("OK", flush=True)
+finally:
+    hwp.quit()
+'''
+    return _run_inline_script(script, timeout=timeout)
+
+
+def delete_page_content(hwpx_path, search_text, output_hwpx, timeout=120):
+    """특정 텍스트가 포함된 페이지의 내용을 삭제한다.
+
+    Args:
+        hwpx_path: HWPX 파일의 WSL 경로
+        search_text: 삭제할 페이지에 포함된 텍스트
+        output_hwpx: 출력 HWPX 파일의 WSL 경로
+        timeout: 실행 제한 시간 (초)
+
+    Returns:
+        bool: 성공 여부
+    """
+    win_hwpx = wsl_to_win_path(hwpx_path)
+    win_output = wsl_to_win_path(output_hwpx)
+
+    script = f'''\
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.hwp_com import HwpController
+
+hwp = HwpController(visible=False)
+try:
+    hwp.open(r"{win_hwpx}")
+    # 작성요령 텍스트를 찾아 해당 영역 삭제
+    found = hwp.find_text("{search_text}")
+    if found:
+        # 해당 줄의 내용 삭제 (전체 페이지 삭제는 복잡하므로 텍스트만 삭제)
+        hwp._hwp.HAction.Run("MoveLineBegin")
+        hwp._hwp.HAction.Run("MoveSelLineEnd")
+        hwp._hwp.HAction.Run("Delete")
+    hwp.save_as(r"{win_output}", "HWPX")
     print("OK", flush=True)
 finally:
     hwp.quit()
@@ -276,8 +495,9 @@ def _run_inline_script(script_code, timeout=120):
             f.write(script_code)
 
         win_tmp = wsl_to_win_path(tmp_path)
+        # cmd.exe 경유 — WSL에서 Windows Python 직접 호출 시 행(hang) 방지
         proc = subprocess.Popen(
-            [WIN_PYTHON, win_tmp],
+            ["cmd.exe", "/c", WIN_PYTHON, win_tmp],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -293,6 +513,8 @@ def _run_inline_script(script_code, timeout=120):
         stdout = stdout_bytes.decode("utf-8", errors="replace")
         stderr = stderr_bytes.decode("utf-8", errors="replace")
 
+        if stdout:
+            print(f"[bridge] {stdout.strip()}")
         if proc.returncode != 0:
             print(f"[bridge] STDERR: {stderr}", file=sys.stderr)
 
