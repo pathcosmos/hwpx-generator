@@ -2,64 +2,89 @@
 
 한컴오피스 한글(Hangul) 문서를 프로그래밍 방식으로 생성하는 도구입니다. 정부 사업계획서 등 복잡한 양식 문서의 자동 생성을 목표로 합니다.
 
-**현재 상태**: Milestone 2 완료 — 다중 템플릿 지원 + 한컴오피스 호환성 강화
-- 커버 페이지 93개 셀 XML 직접 채우기
-- COM 기반 텍스트 찾아바꾸기
-- PDF 자동 변환
-- SSIM 검증 통과 (0.9660, 기준 0.90)
-- **다중 템플릿 지원** — 임의의 HWPX 파일을 템플릿으로 등록하여 사용 가능
-- **한컴오피스 호환성 강화** — XML 선언부 보존, ZIP 압축 방식 보존
+**현재 상태**: Milestone 3 완료 — Two-Pass Hybrid Form Filler Pipeline
+- **Pass 1**: XML 직접 편집 — 36개 표, 184개 셀 자동 채움 + 콘텐츠 마커 삽입 (lxml, WSL)
+- **Pass 2**: COM 자동화 — 마크다운 문서를 파싱하여 서식 있는 본문 삽입 (pywin32, Windows)
+- 마크다운 → HWPX 자동 변환 (헤딩, 문단, 표, 리스트 지원)
+- COM 포스트 포맷 패턴으로 정확한 서식 적용 (0.1pt 버그 해결)
+- 경남 R&BD 사업계획서 양식 전용 템플릿 지원
+- 다중 템플릿 지원 — 임의의 HWPX 파일을 템플릿으로 등록하여 사용 가능
+- 한컴오피스 호환성 강화 — XML 선언부 보존, ZIP 압축 방식 보존
 
 ## 주요 기능
 
+- **마크다운 → HWPX 자동 변환** — `.md` 파일을 파싱하여 HWPX 양식의 지정 위치에 서식 있는 본문 삽입
+- **Two-Pass 하이브리드 파이프라인** — Pass 1(XML 직접 편집) + Pass 2(COM 서식 삽입)으로 정확도와 속도를 동시 확보
 - **다중 템플릿 지원** — 임의의 HWPX 파일을 템플릿으로 등록, 설정 기반 문서 생성
-- **템플릿 기반 HWPX 생성** — XML 셀 직접 수정 + COM 텍스트 교체의 하이브리드 방식
+- **COM 포스트 포맷 패턴** — InsertText → 선택 → 서식 적용 → 해제로 정확한 폰트/크기 렌더링
 - **PDF 자동 변환** — 한컴오피스 COM API를 통한 정확한 PDF 출력
 - **PDF 비교 검증** — SSIM(구조적 유사도) + 텍스트 일치도 자동 비교
 - **템플릿 구조 분석** — HWPX 파일의 표/셀/스타일 구조 추출 + 설정 초안 자동 생성
+- **감사/디버깅 도구** — 교차참조 검사, 콘텐츠 무결성 감사, COM 크래시 격리, XML 직렬화 진단
 
 ## 아키텍처
 
-### 전체 파이프라인
+### Two-Pass 파이프라인
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      WSL (Ubuntu)                           │
-│                                                             │
-│  ┌──────────┐    ┌──────────────┐    ┌───────────────┐      │
-│  │  JSON    │───>│ field_mapper │───>│  hwpx_editor  │      │
-│  │  Input   │    │  (매핑)      │    │  (XML 수정)   │      │
-│  └──────────┘    └──────────────┘    └──────┬────────┘      │
-│                                             │               │
-│                                    ┌────────▼────────┐      │
-│                                    │    bridge.py    │      │
-│                                    │ (WSL↔Win 브릿지) │      │
-│                                    └────────┬────────┘      │
-│                                             │               │
-├─────────────────────────────────────────────┼───────────────┤
-│                   Windows                   │               │
-│                                    ┌────────▼────────┐      │
-│                                    │   hwp_com.py   │      │
-│                                    │  (COM 자동화)   │      │
-│                                    └────────┬────────┘      │
-│                                        ┌────┴────┐          │
-│                                        ▼         ▼          │
-│                                     .hwpx      .pdf         │
-├─────────────────────────────────────────────────────────────┤
-│                      WSL (검증)                              │
-│                                    ┌─────────────────┐      │
-│                                    │  pdf_compare.py │      │
-│                                    │  (SSIM 검증)    │      │
-│                                    └─────────────────┘      │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  Pass 1: XML 직접 편집 (WSL, lxml)                               │
+│                                                                  │
+│  ┌──────────┐   ┌──────────────┐   ┌──────────────┐             │
+│  │  JSON    │──>│ field_mapper │──>│ hwpx_editor  │             │
+│  │  Input   │   │  (셀 매핑)   │   │ (184셀 채움)  │             │
+│  └──────────┘   └──────────────┘   └──────┬───────┘             │
+│                                           │                      │
+│  ┌──────────┐   ┌────────────────┐        ▼                      │
+│  │ Markdown │──>│  md_parser     │   ┌──────────────┐            │
+│  │ Sections │   │ (구조화 파싱)   │   │ form_filler  │            │
+│  └──────────┘   └───────┬────────┘   │ (오케스트레이터)│            │
+│                         │            └──────┬───────┘            │
+│                         ▼                   │                     │
+│                 ┌────────────────┐           │                     │
+│                 │ section_mapper │           │                     │
+│                 │ (마커 매핑)     │           │                     │
+│                 └───────┬────────┘           │                     │
+│                         │                   │                     │
+│                         ▼                   │                     │
+│                 ┌────────────────┐           │                     │
+│                 │  md_to_ops     │           │                     │
+│                 │ (COM 명령 생성) │           │                     │
+│                 └───────┬────────┘           │                     │
+│                         │                   │                     │
+├─────────────────────────┼───────────────────┼─────────────────────┤
+│  Pass 2: COM 자동화 (Windows, pywin32)      │                     │
+│                         │                   │                     │
+│                         ▼                   ▼                     │
+│                 ┌────────────────────────────────┐                │
+│                 │         bridge.py               │                │
+│                 │  (WSL→Windows 브릿지)            │                │
+│                 │  포스트 포맷: Insert→Select→     │                │
+│                 │  Format→Deselect                │                │
+│                 └───────────┬────────────────────┘                │
+│                             │                                     │
+│                        ┌────┴────┐                                │
+│                        ▼         ▼                                │
+│                     .hwpx      .pdf                               │
+├───────────────────────────────────────────────────────────────────┤
+│  검증 (WSL)                                                       │
+│                 ┌─────────────────┐                                │
+│                 │  pdf_compare.py │                                │
+│                 │  (SSIM 검증)    │                                │
+│                 └─────────────────┘                                │
+└───────────────────────────────────────────────────────────────────┘
 ```
 
 ### 모듈 구성
 
 | 모듈 | 실행 환경 | 역할 |
 |------|----------|------|
+| `src/form_filler.py` | WSL | **파이프라인 오케스트레이터**. Pass 1 + Pass 2 순차 실행 |
+| `src/md_parser.py` | WSL | 마크다운 파서. `.md` → 구조화된 블록(헤딩/문단/표/리스트) |
+| `src/md_to_ops.py` | WSL | 마크다운 블록 → COM 자동화 명령 시퀀스 변환 |
+| `src/section_mapper.py` | WSL | 마크다운 섹션 → HWPX 마커(##SEC_CONTENT##) 매핑 |
 | `src/generate_hwpx.py` | WSL | 메인 CLI 파이프라인. 전체 흐름 제어 |
-| `src/bridge.py` | WSL | WSL↔Windows Python 브릿지. COM 스크립트 실행 |
+| `src/bridge.py` | WSL | WSL↔Windows Python 브릿지. 포스트 포맷 패턴 구현 |
 | `src/hwp_com.py` | Windows | 한컴오피스 COM 자동화 (pywin32) |
 | `src/hwpx_editor.py` | WSL | HWPX ZIP 내부 section0.xml 직접 수정 (lxml) |
 | `src/field_mapper.py` | WSL | JSON 입력 데이터 → 셀 좌표 매핑 |
@@ -342,6 +367,7 @@ HWPX의 XML은 12개 이상의 네임스페이스를 사용합니다. `xml.etree
 ```
 hwpx_generator/
 ├── README.md
+├── CHANGELOG.md                        # 변경 이력
 ├── CLAUDE.md                           # Claude Code 가이드
 ├── analysis/                           # 접근방식 평가 보고서
 │   ├── approach_comparison.md          #   3가지 방식 종합 비교
@@ -351,28 +377,42 @@ hwpx_generator/
 │   └── hwpx_structure_analysis.md      #   HWPX 구조 분석
 ├── data/
 │   ├── sample_input.json               # 샘플 입력 데이터
-│   └── schema.json                     # 입력 데이터 JSON Schema
-├── ref/
-│   ├── test_01.hwpx                    # 참조 HWPX (템플릿 원본)
-│   ├── test_01.hwp                     # 참조 HWP
-│   └── test_01.pdf                     # 참조 PDF (검증 기준)
+│   ├── schema.json                     # 입력 데이터 JSON Schema
+│   └── form_content_map.json           # 마크다운 섹션 → HWPX 마커 매핑
+├── ref/                                # 참조 파일 (gitignore 대상)
+│   └── ...
 ├── src/
 │   ├── __init__.py
+│   ├── form_filler.py                  # ★ 파이프라인 오케스트레이터 (Pass 1 + Pass 2)
+│   ├── md_parser.py                    # ★ 마크다운 파서
+│   ├── md_to_ops.py                    # ★ 마크다운 → COM 명령 변환
+│   ├── section_mapper.py               # ★ 섹션 → 마커 매핑
 │   ├── generate_hwpx.py                # 메인 CLI 파이프라인
-│   ├── bridge.py                       # WSL↔Windows 브릿지
+│   ├── bridge.py                       # WSL↔Windows 브릿지 (포스트 포맷 패턴)
 │   ├── hwp_com.py                      # 한컴오피스 COM 자동화
 │   ├── hwpx_editor.py                  # HWPX XML 편집기 (lxml)
 │   ├── field_mapper.py                 # JSON→셀 좌표 매핑
 │   ├── pdf_compare.py                  # PDF 비교 검증
 │   └── extract_template.py             # 템플릿 구조 분석
 ├── templates/
-│   └── cloud_integrated/
-│       ├── template.json               # 템플릿 메타 정보 + 찾아바꾸기 매핑
-│       └── field_map.json              # 커버 페이지 필드 매핑 설정
+│   ├── cloud_integrated/               # 클라우드 종합솔루션 템플릿
+│   │   ├── template.json
+│   │   └── field_map.json
+│   └── gyeongnam_rbd/                  # ★ 경남 R&BD 사업계획서 템플릿
+│       └── field_map.json              #   36개 표, 184개 셀 매핑
+├── tools/
+│   └── make_rawcopy.py                 # HWPX 클린 카피 유틸리티
 ├── tests/
-│   ├── test_hwpx_editor.py             # HwpxEditor 단위 테스트 (11개)
+│   ├── test_hwpx_editor.py             # HwpxEditor 단위 테스트
 │   ├── test_hwp_com_module.py          # COM 모듈 테스트
 │   └── test_integration.py             # 통합 테스트
+├── audit_crossrefs.py                  # 교차참조 유효성 검사
+├── audit_hwpx_content.py               # 콘텐츠 무결성 감사
+├── audit_section0.py                   # section0.xml 상세 감사
+├── compare_section0.py                 # section0 구조 비교
+├── compare_section0_v2.py              # section0 셀 단위 비교
+├── debug_crash_isolate.py              # COM 크래시 격리 디버거
+├── diagnose_xml_serialization.py       # XML 직렬화 진단
 └── output/                             # 생성 결과물 (gitignore 대상)
 ```
 
