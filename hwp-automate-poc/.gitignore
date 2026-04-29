@@ -1,0 +1,6 @@
+# Cargo build artifacts
+/target/
+**/*.rs.bk
+
+# Output (already covered by parent .gitignore but kept here for clarity when used standalone)
+/output/

@@ -1,0 +1,14 @@
+[package]
+name = "hwp_automate"
+version = "0.1.0"
+edition = "2021"
+description = "Python bindings for HWP automation built on rhwp"
+publish = false
+
+[lib]
+name = "hwp_automate"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
+rhwp = { path = "../../codebase/rhwp", default-features = false }

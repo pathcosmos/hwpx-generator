@@ -1,0 +1,17 @@
+[package]
+name = "hwp-automate-poc"
+version = "0.1.0"
+edition = "2021"
+description = "기존 한글 양식의 표·셀에 데이터를 자동 삽입하는 PoC (rhwp 기반)"
+publish = false
+
+[dependencies]
+rhwp = { path = "../../codebase/rhwp", default-features = false }
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = "thin"
