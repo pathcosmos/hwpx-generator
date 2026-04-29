@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-04-29 #2] V1 실 양식 검증 + BinData 보존 우회 + 상세 Acknowledgement
+
+실 사업신청서 양식 (35MB / 54MB) 으로 검증하면서 발견한 두 가지 한계를 수정하고, 상세 출처 표기를 추가.
+
+### 발견·수정한 두 가지 함정
+
+1. **셀 병합으로 `cell_idx = row × cols + col` 어긋남**
+   - 5×6 = 30 셀 (병합 없음) 양식에선 우연히 맞았으나 7×8 (병합으로 27셀만) 양식에서 실패
+   - 수정: `find_cell_idx()` 가 표의 cells Vec 에서 (row, col) 위치를 직접 검색. pre-flight 에서 한 번 산출, 캐시.
+
+2. **HWP 셀 텍스트 trailing whitespace 자동 추가**
+   - 사용자 입력 "단원구" 가 라운드트립 후 "단원구 " 로 보여 verify 실패
+   - 수정: post-fill verify 비교를 `trim_end()` 적용
+
+### 추가: BinData 보존 우회 (`preserve_images=True` 기본 활성)
+
+rhwp v0.7.x 의 BinData (BMP 이미지 등) 라운드트립 충실도 한계 — 일부 양식에서 한컴이 "손상" 으로 판정 또는 그림 일부 누락. **rhwp 자체의 `LenientCfbReader` + `mini_cfb::build_cfb` 를 활용한 stream-level 머지 우회법**을 도입.
+
+- rhwp output 베이스 + BinData/Preview 만 입력 양식에서 byte-for-byte 보존
+- 결과: BinData 54/54 동일 크기, 출력 크기 ≈ 입력 크기 (이전 ~5MB 손실 → 현재 ~80KB 차이)
+- HWP 표준 layout (`leaf_to_hwp_path`) 으로 LenientCfbReader 의 leaf-only 경로를 storage path 로 재구성
+
+### 상세 Acknowledgement 추가 (3 개 README)
+
+`README.md`, `hwp-automate-poc/README.md`, `hwp-automate-py/README.md` 모두에 다음 추가:
+
+- **rhwp** ([@edwardkim](https://github.com/edwardkim/rhwp)): 활용 모듈 매트릭스, 의존 방식, 라이선스 (MIT)
+- **hop** ([@golbin](https://github.com/golbin/hop)): 흡수한 4 개 패턴, 의존 방식 (코드 의존 없음)
+- 한글/한컴 상표 안내, 외부 재배포 의무 (저자 표기, MIT 라이선스 동봉, 상표 안내 유지)
+
+### 변경 통계
+
+| 영역 | 변경 |
+|---|---|
+| `hwp-automate-py/src/lib.rs` | +238 / -23 (cell_idx 위치 검색, trim_end verify, merge_cfb_preserving_input, leaf_to_hwp_path) |
+| `hwp-automate-py/Cargo.toml` | +2 (cfb crate 의존 추가/제거 사이클 후 rhwp internal 모듈 사용) |
+| `README.md` | +83 (Acknowledgement) |
+| `hwp-automate-poc/README.md` | +67 (Acknowledgement) |
+| `hwp-automate-py/README.md` | +74 (Acknowledgement) |
+| **합계** | **+441 / -23** |
+
+---
+
 ## [2026-04-29] Rust + rhwp 자동화 경로 추가 (cross-platform, COM 불필요)
 
 **커밋**: `39e4070` — Add Rust+rhwp automation path (cross-platform HWP filling)

@@ -156,8 +156,67 @@ fs::write("output.hwp", &bytes)?;
 - CLI 옵션 확장 (`--template`, `--data <json>`, `--output`)
 - Windows / Linux 에서의 회귀 검증
 
-## 라이선스 / 출처
+## Acknowledgement (감사·출처)
 
-- rhwp: MIT (Edward Kim) — 본 PoC 의 핵심 엔진
-- hop: MIT (golbin) — `DocumentCore::from_bytes` 사용 패턴 참고
-- 본 PoC: 사용자 프로젝트 내부 사용
+본 PoC 는 두 개의 외부 오픈소스 프로젝트 위에 만들어졌습니다. 우리는 그 위에 얇은 자동화 레이어를 더했을 뿐이며, HWP 처리의 핵심 가치는 모두 다음 프로젝트들의 결과물입니다.
+
+### 🦀 rhwp — 핵심 엔진 (직접 의존)
+
+- **저자:** Edward Kim ([@edwardkim](https://github.com/edwardkim))
+- **저장소:** https://github.com/edwardkim/rhwp
+- **라이선스:** MIT
+- **설명:** Rust + WebAssembly 기반 오픈소스 HWP/HWPX 뷰어/에디터. v0.7.x 시점 891+ 테스트, hyper-waterfall 방법론으로 개발 (작업지시자-AI 페어 프로그래밍).
+
+**본 PoC 가 사용하는 rhwp 의 모듈·기능:**
+
+| rhwp 모듈/기능 | 본 PoC 가 사용하는 방법 |
+|---|---|
+| `rhwp::document_core::DocumentCore` | 양식 로드(`from_bytes`), 셀 텍스트 삽입, 표 생성, 스타일 적용 등 IR 조작의 핵심 API |
+| `rhwp::parser::parse_document` | HWP 5.0 / HWPX 자동 포맷 감지 + 파싱 |
+| `rhwp::serializer::serialize_hwp` | Document IR → HWP 5.0 binary 출력 (`export_hwp_native` 가 호출) |
+| `rhwp::parser::cfb_reader::LenientCfbReader` | 비표준 CFB 메타데이터를 가진 양식 파일도 lenient 파싱 |
+| `rhwp::serializer::mini_cfb::build_cfb` | rhwp 의 mini CFB writer — 한컴 호환 CFB v3 컨테이너 작성 |
+| `rhwp::model::control::Control::Table`, `model::table::{Table, Cell}` | 표/셀 모델 — `discover_tables` 에서 IR 직접 순회 |
+
+**의존 방식:** 본 PoC 의 `Cargo.toml` 에 `rhwp = { path = "../../codebase/rhwp", default-features = false }` 로 path 의존. **rhwp 코드는 일절 수정하지 않음** — upstream 그대로 사용. rhwp 업데이트 시 같은 위치에 새 버전 clone 으로 교체 가능.
+
+**왜 rhwp 인가:** Mac/Linux/Windows 어디서든 한컴오피스 설치 없이 .hwp 처리가 가능한 유일한 오픈소스 엔진. 891+ 테스트가 IR 라운드트립 무결성을 보장하고, 한컴이 받아들이는 valid HWP 5.0 바이너리를 생성합니다. 본 PoC 의 모든 신뢰성은 rhwp 의 IR 모델·파싱·직렬화 정확도에 기반합니다.
+
+### 🪝 hop — 패턴 출처 (참고만, 직접 의존 안 함)
+
+- **저자:** golbin ([@golbin](https://github.com/golbin))
+- **저장소:** https://github.com/golbin/hop
+- **라이선스:** MIT
+- **설명:** Tauri 2 기반 macOS/Windows/Linux 데스크톱 HWP 뷰어·에디터. rhwp 를 엔진(third_party/rhwp 서브모듈)으로 사용.
+
+**본 PoC 가 hop 에서 흡수한 패턴:**
+
+| hop 의 코드 | 본 PoC 가 영향받은 부분 |
+|---|---|
+| `apps/desktop/src-tauri/src/state.rs` 의 `editable_core_from_bytes` | 양식을 `DocumentCore::from_bytes()` 한 줄로 로드하는 표준 진입점 패턴 |
+| `commands.rs` 의 `mutate_document(operation, args)` JSON dispatcher | 우리 `fill_template(operations=[...])` 의 다중 op 디스패치 설계 영감 |
+| `commit_staged_hwp_save` (atomic save: staged → rename) | 향후 운영 시 사용자 양식 보호용 staged write 패턴 (현재는 우리 출력은 별도 경로라 생략) |
+| 의도적으로 `rhwp::DocumentCore` 만 사용, IR 의 내부 필드는 안 만짐 | rhwp 와의 깔끔한 boundary 유지 — 우리도 동일 정책 |
+
+**의존 방식:** **직접 코드 의존 없음**. 단지 hop 의 코드를 읽고 좋은 패턴을 본 PoC 설계에 흡수. hop 자체는 GUI 앱이라 우리 헤드리스 자동화 흐름과는 다른 영역.
+
+**왜 hop 패턴인가:** rhwp 를 운영 환경에서 어떻게 쓰는지 보여주는 가장 완성도 높은 오픈소스 사례. 직접 코드를 읽으며 "raw IR 만지지 말고 `*_native` 메서드 경유" 같은 안전 정책을 자연스럽게 흡수했습니다.
+
+### ⚙️ 그 외 사용 라이브러리
+
+| 라이브러리 | 용도 | 라이선스 |
+|---|---|---|
+| Rust toolchain (`cargo`, `rustc`) | 빌드 | MIT/Apache-2.0 |
+| rhwp 의 transitive 의존: cfb, byteorder, zip, quick-xml, encoding_rs, image, usvg, ttf-parser 등 | rhwp 가 직접 사용 (우리는 transitive) | 각 crate 의 MIT/Apache-2.0 |
+
+### 한글 / 한컴 상표 안내
+
+- **"한글", "한컴", "HWP", "HWPX"** 는 주식회사 한글과컴퓨터의 등록 상표입니다.
+- 본 프로젝트(hwpx-generator 의 hwp-automate-poc 서브프로젝트)는 한글과컴퓨터와 제휴, 후원, 승인 관계가 없는 **독립적인 오픈소스 작업**입니다.
+- HWP 5.0 바이너리 포맷 처리는 rhwp 가 한글과컴퓨터의 공개 문서를 참고하여 구현한 결과를 활용합니다.
+
+### 본 PoC 의 위치·범위
+
+- **목적:** rhwp 엔진을 사용한 양식 자동 채우기의 가능성 검증 + Python 바인딩 전제 구현
+- **상태:** PoC (proof-of-concept). 사용자 내부 업무 자동화 목적
+- **외부 배포·재배포 시:** rhwp / hop / Hangul/Hancom 상표 표기 의무 준수 필수
