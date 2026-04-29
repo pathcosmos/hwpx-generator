@@ -16,6 +16,8 @@ use pyo3::types::{PyDict, PyList};
 use rhwp::document_core::DocumentCore;
 use rhwp::error::HwpError;
 use rhwp::model::control::Control;
+use rhwp::parser::cfb_reader::LenientCfbReader;
+use rhwp::serializer::mini_cfb;
 use std::fs;
 
 fn map_err<T>(r: Result<T, HwpError>) -> PyResult<T> {
@@ -24,6 +26,155 @@ fn map_err<T>(r: Result<T, HwpError>) -> PyResult<T> {
 
 fn io<T>(r: std::io::Result<T>) -> PyResult<T> {
     r.map_err(|e| pyo3::exceptions::PyIOError::new_err(e.to_string()))
+}
+
+/// HWP 표준 layout 에 따라 leaf 이름 → 전체 storage path 추론.
+///
+/// LenientCfbReader 가 leaf 이름만 저장하므로 (예: "BIN0001.bmp", "Section0") parent storage 를
+/// 모른다. HWP 5.0 의 CFB 구조는 표준화되어 있어 leaf 이름 패턴으로 storage 결정 가능.
+fn leaf_to_hwp_path(leaf: &str) -> String {
+    let l = leaf.trim_start_matches('/');
+    // BinData: BIN****.* 형식 (BIN0001.bmp, BIN001F.png 등)
+    if l.starts_with("BIN") && l.contains('.') && l.len() >= 8 {
+        return format!("/BinData/{}", l);
+    }
+    // Preview: PrvText, PrvImage
+    if l == "PrvText" || l == "PrvImage" {
+        return format!("/Preview/{}", l);
+    }
+    // BodyText: Section{N}
+    if l.starts_with("Section") && l[7..].chars().all(|c| c.is_ascii_digit()) {
+        return format!("/BodyText/{}", l);
+    }
+    // ViewText: ViewSection{N}
+    if l.starts_with("ViewSection") && l[11..].chars().all(|c| c.is_ascii_digit()) {
+        return format!("/ViewText/{}", l);
+    }
+    // Scripts: DefaultJScript, JScriptVersion
+    if l == "DefaultJScript" || l == "JScriptVersion" {
+        return format!("/Scripts/{}", l);
+    }
+    // 그 외 root level: DocInfo, FileHeader, HwpSummaryInformation, _LinkDoc 등
+    format!("/{}", l)
+}
+
+/// 두 HWP CFB 를 머지하여 새 CFB 를 만든다 — **rhwp output 베이스 + BinData/Preview 만 input 에서 보존**.
+///
+/// 동작:
+///   - `rhwp_output_bytes` 의 모든 stream 을 베이스로 사용 (rhwp 의 valid CFB)
+///   - 단, BinData/* 와 Preview/* 는 `input_bytes` 의 raw bytes 로 교체 (rhwp 라운드트립 손실 회피)
+///   - rhwp output 에 없지만 input 에 있는 BinData/Preview stream 도 추가 (rhwp 가 빠뜨렸을 수 있는 이미지)
+///
+/// 이 로직이 정답인 이유:
+///   - rhwp output 자체는 cell text 변경이 반영된 valid HWP CFB (rhwp 의 891+ tests 가 보장)
+///   - BinData/Preview 만 raw bytes 그대로 교체하므로 layout/압축 일관성 유지
+///   - rhwp 가 BinData 를 약간 변형 또는 빠뜨려도 input 원본으로 복원
+///
+/// 반환: (final_bytes, count_from_rhwp, count_from_input)
+fn merge_cfb_preserving_input(
+    input_bytes: &[u8],
+    rhwp_output_bytes: &[u8],
+) -> Result<(Vec<u8>, usize, usize), String> {
+    let input_reader = LenientCfbReader::open(input_bytes)
+        .map_err(|e| format!("input CFB 파싱 실패: {:?}", e))?;
+    let rhwp_reader = LenientCfbReader::open(rhwp_output_bytes)
+        .map_err(|e| format!("rhwp output CFB 파싱 실패: {:?}", e))?;
+
+    // input 으로부터 raw bytes 그대로 가져올 stream 패턴
+    let take_from_input = |path: &str| -> bool {
+        let p = path.strip_prefix('/').unwrap_or(path);
+        p.starts_with("BinData/") || p == "PrvText" || p == "PrvImage" || p.starts_with("Preview")
+    };
+
+    let mut named_owned: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut from_rhwp = 0usize;
+    let mut from_input = 0usize;
+    let mut added_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // take_from_input 도 leaf name 기준으로 검사 — BIN****.* 패턴 매칭
+    let take_from_input_leaf = |leaf: &str| -> bool {
+        let l = leaf.trim_start_matches('/');
+        (l.starts_with("BIN") && l.contains('.'))
+            || l == "PrvText"
+            || l == "PrvImage"
+    };
+
+    // 1단계: rhwp output 을 베이스로 모든 stream 처리
+    for (path, _start, _size, obj_type) in rhwp_reader.list_entries() {
+        if *obj_type != 2 {
+            continue;
+        }
+        if path == "Root Entry" || path.is_empty() {
+            continue;
+        }
+        // HWP 표준 layout 으로 path 재구성 (leaf → /storage/leaf)
+        let canonical = leaf_to_hwp_path(path);
+
+        let bytes_opt = if take_from_input_leaf(path) && input_reader.has_stream(path) {
+            from_input += 1;
+            input_reader.read_stream(path).ok()
+        } else {
+            from_rhwp += 1;
+            rhwp_reader.read_stream(path).ok()
+        };
+        if let Some(bytes) = bytes_opt {
+            added_paths.insert(canonical.clone());
+            named_owned.push((canonical, bytes));
+        }
+    }
+
+    // 2단계: input 에만 있는 BinData/Preview stream (rhwp 가 빠뜨린 것) 추가
+    for (path, _start, _size, obj_type) in input_reader.list_entries() {
+        if *obj_type != 2 {
+            continue;
+        }
+        if path == "Root Entry" || path.is_empty() {
+            continue;
+        }
+        if !take_from_input_leaf(path) {
+            continue;
+        }
+        let canonical = leaf_to_hwp_path(path);
+        if added_paths.contains(&canonical) {
+            continue;
+        }
+        if let Ok(bytes) = input_reader.read_stream(path) {
+            from_input += 1;
+            named_owned.push((canonical, bytes));
+        }
+    }
+
+    // mini_cfb::build_cfb 입력 형식 변환
+    let refs: Vec<(&str, &[u8])> = named_owned
+        .iter()
+        .map(|(p, b)| (p.as_str(), b.as_slice()))
+        .collect();
+    let final_bytes = mini_cfb::build_cfb(&refs)?;
+    Ok((final_bytes, from_rhwp, from_input))
+}
+
+/// 단독 호출용 — `source_hwp` 의 모든 BinData/Preview stream 등을 보존하면서
+/// `target_hwp` 의 BodyText/DocInfo/FileHeader 만 살린 새 CFB 로 `out_hwp` 를 만든다.
+///
+/// fill_template 의 preserve_images=True 와 동일 효과를 별도 단계로 적용 가능.
+#[pyfunction]
+#[pyo3(signature = (source_hwp, target_hwp, out_hwp))]
+fn preserve_images_from_source(
+    source_hwp: &str,
+    target_hwp: &str,
+    out_hwp: &str,
+) -> PyResult<usize> {
+    let source = io(fs::read(source_hwp))?;
+    let target = io(fs::read(target_hwp))?;
+    let (merged, from_rhwp, _from_input) = merge_cfb_preserving_input(&source, &target)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CFB 머지 실패: {}", e)))?;
+    if let Some(parent) = std::path::Path::new(out_hwp).parent() {
+        if !parent.as_os_str().is_empty() {
+            io(fs::create_dir_all(parent))?;
+        }
+    }
+    io(fs::write(out_hwp, &merged))?;
+    Ok(from_rhwp)
 }
 
 /// 표 위치 + 헤더 행 캐시.
@@ -39,11 +190,21 @@ struct TableLocation {
 }
 
 /// 적용할 셀 채우기 단위.
+///
+/// `cell_idx` 는 rhwp 의 `Table.cells` Vec 안에서의 0-based 위치.
+/// 병합된 셀이 있는 표에서는 row × cols + col 공식이 틀리므로 위치 기반 검색으로 미리 산출.
 #[derive(Debug, Clone)]
 struct CellFill {
     row: u16,
     col: u16,
+    cell_idx: usize,
     value: String,
+}
+
+/// 표의 cells 벡터에서 (row, col) 위치를 가진 셀의 인덱스를 찾는다.
+/// 병합으로 그 위치가 표에 존재하지 않으면 None.
+fn find_cell_idx(table: &TableLocation, row: u16, col: u16) -> Option<usize> {
+    table.cells.iter().position(|(r, c, _)| *r == row && *c == col)
 }
 
 /// 양식의 모든 표 인벤토리.
@@ -177,9 +338,17 @@ fn op_to_fills(
                     op_idx, row, table.rows
                 )));
             }
+            let r = row as u16;
+            let cell_idx = find_cell_idx(table, r, target_col).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "operations[{}].values: (row={}, col={}) 위치에 셀이 없음 (병합되었거나 범위 외)",
+                    op_idx, r, target_col
+                ))
+            })?;
             fills.push(CellFill {
-                row: row as u16,
+                row: r,
                 col: target_col,
+                cell_idx,
                 value,
             });
         }
@@ -240,9 +409,18 @@ fn op_to_fills(
                     op_idx, i, col, table.cols
                 )));
             }
+            let r = row as u16;
+            let c = col as u16;
+            let cell_idx = find_cell_idx(table, r, c).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "operations[{}].cells[{}]: (row={}, col={}) 위치에 셀이 없음 (병합되었거나 표 외)",
+                    op_idx, i, r, c
+                ))
+            })?;
             fills.push(CellFill {
-                row: row as u16,
-                col: col as u16,
+                row: r,
+                col: c,
+                cell_idx,
                 value,
             });
         }
@@ -317,10 +495,13 @@ fn analyze_template<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
 ///         (row, col) 직접 지정
 ///
 /// 옵션:
-///   - dry_run: bool = False   — true 면 적용·저장 없이 plan 만 반환 (검증 전용)
-///   - verify: bool = True     — true 면 저장 후 재파싱하여 모든 셀 값이 보존됐는지 확인
+///   - dry_run: bool = False         — true 면 적용·저장 없이 plan 만 반환 (검증 전용)
+///   - verify: bool = True           — true 면 저장 후 재파싱하여 모든 셀 값이 보존됐는지 확인
+///   - preserve_images: bool = True  — true 면 저장 후 원본 양식의 BinData/Preview stream 을
+///                                     raw bytes 그대로 덮어써서 rhwp 의 이미지 라운드트립 손실 우회.
+///                                     이미지를 추가/삭제하는 변경이 아닐 때 안전하고 권장됨.
 #[pyfunction]
-#[pyo3(signature = (template_path, out_path, operations, dry_run=false, verify=true))]
+#[pyo3(signature = (template_path, out_path, operations, dry_run=false, verify=true, preserve_images=true))]
 fn fill_template<'py>(
     py: Python<'py>,
     template_path: &str,
@@ -328,6 +509,7 @@ fn fill_template<'py>(
     operations: Bound<'py, PyList>,
     dry_run: bool,
     verify: bool,
+    preserve_images: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     if operations.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -358,19 +540,22 @@ fn fill_template<'py>(
 
     // dry_run 이면 여기서 plan 만 반환 (양식 무수정)
     if dry_run {
-        return build_result_dict(py, out_path, 0, &planned, "dry_run", None);
+        let r = build_result_dict(py, out_path, 0, &planned, "dry_run", None)?;
+        r.set_item("preserved_streams", 0)?;
+        return Ok(r);
     }
 
     // === Apply: 모든 op 가 유효함이 확인됐으니 batch 모드로 일괄 적용 ===
+    // 주의: cell_idx 는 op_to_fills 에서 이미 (row, col) → 위치 검색으로 산출됨.
+    // 병합 셀이 있는 표는 row*cols+col 공식이 어긋나므로 위치 기반이 정확.
     map_err(core.begin_batch_native())?;
     for (location, fills) in &planned {
         for fill in fills {
-            let cell_idx = (fill.row as usize) * (location.cols as usize) + (fill.col as usize);
             map_err(core.insert_text_in_cell_native(
                 location.section,
                 location.parent_para,
                 location.control,
-                cell_idx,
+                fill.cell_idx,
                 0,
                 0,
                 &fill.value,
@@ -380,7 +565,21 @@ fn fill_template<'py>(
     map_err(core.end_batch_native())?;
 
     // === Save ===
-    let out_bytes = map_err(core.export_hwp_native())?;
+    let rhwp_out_bytes = map_err(core.export_hwp_native())?;
+
+    // === BinData/Preview 등은 입력 양식에서 보존, BodyText/DocInfo/FileHeader 만 rhwp 출력 사용 ===
+    // rhwp 의 BinData 라운드트립 손실(= 한컴이 "손상" 으로 판정하거나 그림 일부 누락) 회피.
+    let (final_bytes, preserved_streams) = if preserve_images {
+        let (merged, _from_rhwp, from_input) =
+            merge_cfb_preserving_input(&bytes, &rhwp_out_bytes).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("CFB 머지 실패: {}", e))
+            })?;
+        (merged, from_input)
+    } else {
+        (rhwp_out_bytes.clone(), 0)
+    };
+    let out_bytes = final_bytes;
+
     if let Some(parent) = std::path::Path::new(out_path).parent() {
         if !parent.as_os_str().is_empty() {
             io(fs::create_dir_all(parent))?;
@@ -413,7 +612,9 @@ fn fill_template<'py>(
                     .find(|(r, c, _)| *r == fill.row && *c == fill.col)
                     .map(|(_, _, t)| t.as_str())
                     .unwrap_or("(?)");
-                if actual != fill.value {
+                // trim_end: HWP 셀은 내용 끝에 \n/공백을 자동 추가하는 관례가 있음.
+                // leading whitespace 는 의도적일 수 있으므로 trim_end 만 적용.
+                if actual.trim_end() != fill.value.trim_end() {
                     errs.push(format!(
                         "셀 (row={}, col={}) 기대='{}' 실제='{}'",
                         fill.row, fill.col, fill.value, actual
@@ -442,6 +643,7 @@ fn fill_template<'py>(
         status,
         Some(&mismatches),
     )?;
+    result.set_item("preserved_streams", preserved_streams)?;
 
     if verify && !mismatches.is_empty() {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -506,7 +708,7 @@ fn build_result_dict<'py>(
 ///   "values": {int: str},   # 행 인덱스 → 값
 /// }
 #[pyfunction]
-#[pyo3(signature = (template_path, out_path, mapping, dry_run=false, verify=true))]
+#[pyo3(signature = (template_path, out_path, mapping, dry_run=false, verify=true, preserve_images=true))]
 fn fill_template_table<'py>(
     py: Python<'py>,
     template_path: &str,
@@ -514,10 +716,19 @@ fn fill_template_table<'py>(
     mapping: Bound<'py, PyDict>,
     dry_run: bool,
     verify: bool,
+    preserve_images: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let operations = PyList::empty_bound(py);
     operations.append(mapping)?;
-    fill_template(py, template_path, out_path, operations, dry_run, verify)
+    fill_template(
+        py,
+        template_path,
+        out_path,
+        operations,
+        dry_run,
+        verify,
+        preserve_images,
+    )
 }
 
 #[pymodule]
@@ -525,5 +736,6 @@ fn hwp_automate(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_template, m)?)?;
     m.add_function(wrap_pyfunction!(fill_template, m)?)?;
     m.add_function(wrap_pyfunction!(fill_template_table, m)?)?;
+    m.add_function(wrap_pyfunction!(preserve_images_from_source, m)?)?;
     Ok(())
 }

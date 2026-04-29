@@ -497,6 +497,87 @@ python3 src/generate_hwpx.py \
 - 주요 네임스페이스: `hp:`(문단), `hs:`(섹션), `hh:`(헤더), `hc:`(코어), `ha:`(앱)
 - 상세 구조: [`CLAUDE.md`](CLAUDE.md) 및 [`analysis/hwpx_structure_analysis.md`](analysis/hwpx_structure_analysis.md) 참고
 
+## Acknowledgement (감사·출처)
+
+본 저장소는 두 자동화 경로를 보유합니다. 각 경로가 의존하는 외부 오픈소스 프로젝트들에 대한 감사 표기입니다.
+
+### 경로 A — Python + lxml + COM (기존)
+
+| 라이브러리 | 용도 | 라이선스 |
+|---|---|---|
+| [lxml](https://lxml.de/) | HWPX (XML 기반) 직접 편집 | BSD |
+| [pywin32](https://github.com/mhammond/pywin32) | Windows 한컴오피스 COM 자동화 | PSF |
+| [PyMuPDF](https://github.com/pymupdf/PyMuPDF) | PDF 비교 검증 | AGPL |
+| [scikit-image](https://scikit-image.org/) | SSIM 픽셀 비교 | BSD |
+| 한컴오피스 한글 2024 (Windows) | COM 자동화 대상 | 한글과컴퓨터 (별도 라이선스 필요) |
+
+### 경로 B — Rust + rhwp (크로스플랫폼, COM 불필요)
+
+본 저장소의 `hwp-automate-poc/` 와 `hwp-automate-py/` 서브프로젝트는 다음 두 외부 오픈소스 프로젝트 위에서 만들어졌습니다.
+
+#### 🦀 [edwardkim/rhwp](https://github.com/edwardkim/rhwp) — 핵심 엔진 (직접 의존)
+
+- **저자:** Edward Kim ([@edwardkim](https://github.com/edwardkim))
+- **라이선스:** MIT
+- **설명:** Rust + WebAssembly 기반 오픈소스 HWP/HWPX 뷰어/에디터. v0.7.x 시점 891+ 테스트, hyper-waterfall 방법론(작업지시자-AI 페어 프로그래밍)으로 개발.
+- **본 저장소가 사용하는 방법:**
+  - `../codebase/rhwp` 위치에 별도 git clone (본 저장소에 포함되지 않음)
+  - `hwp-automate-poc/Cargo.toml` 과 `hwp-automate-py/Cargo.toml` 이 `path = "../../codebase/rhwp"` 로 의존
+  - rhwp 코드는 일절 수정하지 않고 upstream 그대로 사용
+- **활용 모듈:** `DocumentCore` (IR 빌더), `parse_document`, `serialize_hwp`, `parser::cfb_reader::LenientCfbReader` (비표준 CFB 메타 lenient 파싱), `serializer::mini_cfb::build_cfb` (CFB v3 writer), `model::control::Control::Table`
+- **왜 rhwp 인가:** Mac/Linux/Windows 어디서든 한컴오피스 설치 없이 .hwp 처리가 가능한 유일한 성숙한 오픈소스 엔진. 한글과컴퓨터의 공개 문서를 참고하여 구현된 IR 모델·파서·직렬화기를 그대로 활용합니다.
+
+#### 🪝 [golbin/hop](https://github.com/golbin/hop) — 설계 패턴 출처 (참고만, 직접 의존 안 함)
+
+- **저자:** golbin ([@golbin](https://github.com/golbin))
+- **라이선스:** MIT
+- **설명:** Tauri 2 기반 macOS/Windows/Linux 데스크톱 HWP 뷰어·에디터. rhwp 를 third_party 서브모듈로 통합한 운영 환경 사례.
+- **본 저장소가 흡수한 패턴:**
+  - `DocumentCore::from_bytes(bytes)` — 양식 로드 표준 진입점 (hop 의 `editable_core_from_bytes`)
+  - `mutate_document(operation, args)` JSON 디스패처 → 본 저장소의 `fill_template(operations=[...])` 다중 op 디자인 영감
+  - rhwp 의 raw IR 을 외부에서 만지지 않고 `*_native` 메서드 경유하는 boundary 정책
+- **의존 방식:** 코드 의존 없음. 단지 hop 의 코드를 읽고 좋은 패턴을 흡수.
+- **왜 hop 패턴인가:** rhwp 를 production 환경에서 어떻게 쓰는지 보여주는 가장 완성도 높은 오픈소스 사례. "rhwp 와의 깔끔한 boundary", "JSON 디스패처", "atomic save" 같은 운영 정책을 자연스럽게 채택할 수 있게 해주었습니다.
+
+#### 🦀 추가 Rust 라이브러리 (rhwp 가 transitive 로 사용)
+
+| 라이브러리 | 역할 | 라이선스 |
+|---|---|---|
+| [PyO3](https://github.com/PyO3/pyo3) | Rust ↔ Python FFI 바인딩 (직접 의존) | Apache-2.0 / MIT |
+| [maturin](https://github.com/PyO3/maturin) | abi3 wheel 빌드 도구 | MIT |
+| 그 외 rhwp 의 transitive 의존: cfb, byteorder, zip, quick-xml, encoding_rs, image, usvg, pdf-writer, ttf-parser 등 | 각 crate 의 MIT/Apache-2.0 |
+
+#### 의존성 디렉토리 레이아웃
+
+```
+temp_git/                              (사용자 작업 루트)
+├── hwpx-generator/                    (이 저장소)
+│   ├── hwp-automate-poc/              (Rust PoC, rhwp 사용)
+│   ├── hwp-automate-py/               (Python 바인딩, rhwp 사용)
+│   └── ...
+└── codebase/                          (외부 참조, 본 저장소에 포함 안 됨)
+    ├── rhwp/                          ← gh repo clone edwardkim/rhwp
+    └── hop/                           ← gh repo clone golbin/hop  (참고용)
+```
+
+운영 시 vendor 고정이 필요하면 hop 의 `third_party/rhwp` git submodule 패턴을 따라할 수 있습니다. 현재 PoC 단계에선 path 의존이 더 빠른 반복을 위해 유지.
+
+### 한글 / 한컴 상표 안내
+
+- **"한글", "한컴", "HWP", "HWPX"** 는 주식회사 한글과컴퓨터의 등록 상표입니다.
+- 본 프로젝트(hwpx-generator)는 한글과컴퓨터와 제휴, 후원, 승인 관계가 없는 **독립적인 오픈소스 작업**입니다.
+- HWP/HWPX 포맷 처리는 한글과컴퓨터의 공개 문서를 참고한 다음 도구들을 활용합니다:
+  - 경로 A: lxml (XML 직접 편집) + 한컴오피스 한글 2024 (COM 자동화 — 별도 라이선스 필요)
+  - 경로 B: rhwp (오픈소스 Rust 엔진, MIT)
+
+### 외부 재배포 / 공개 시
+
+본 저장소를 외부에 재배포하거나 공개 자산화할 경우 다음을 준수하시기 바랍니다.
+
+1. rhwp 와 hop 의 MIT 라이선스 텍스트 동봉 (또는 명시적 링크)
+2. "한글", "한컴", "HWP", "HWPX" 상표 안내 유지
+3. rhwp / hop 저자(@edwardkim, @golbin) 의 기여를 본 README 와 동일 수준으로 표기
+
 ## 라이선스
 
-이 프로젝트는 내부 업무 자동화 목적으로 개발되었습니다.
+이 프로젝트는 내부 업무 자동화 목적으로 개발되었습니다. 외부 의존(rhwp, hop, lxml, pywin32 등) 의 각 라이선스 조건은 위 Acknowledgement 섹션을 참고하세요.

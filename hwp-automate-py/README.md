@@ -342,9 +342,73 @@ python3 -c "import hwp_automate; ..."   # 즉시 반영 확인
 - 표 행 추가/삭제·셀 병합·스타일 적용 등은 본 함수에 없음. 필요하면 lib.rs 에 추가 함수 노출.
 - macOS arm64 wheel 은 Mac 만, Windows/Linux 는 별도 빌드 필요 (abi3 라 Python 버전은 무관).
 
-## 라이선스 / 출처
+## Acknowledgement (감사·출처)
 
-- rhwp: MIT (Edward Kim)
-- pyo3: Apache-2.0
-- maturin: MIT
-- 본 모듈: 사용자 프로젝트 내부 사용
+본 Python 바인딩은 두 개의 외부 오픈소스 프로젝트 위에 만들어졌습니다. HWP 처리의 핵심 가치는 모두 다음 프로젝트들의 결과물이며, 본 모듈은 그 위에 PyO3 + Python 편의 레이어를 더한 얇은 래퍼입니다.
+
+### 🦀 rhwp — 핵심 엔진 (직접 의존)
+
+- **저자:** Edward Kim ([@edwardkim](https://github.com/edwardkim))
+- **저장소:** https://github.com/edwardkim/rhwp
+- **라이선스:** MIT
+- **설명:** Rust + WebAssembly 기반 오픈소스 HWP/HWPX 뷰어/에디터. v0.7.x 시점 891+ 테스트, hyper-waterfall 방법론으로 개발.
+
+**본 모듈이 사용하는 rhwp 의 모듈·기능:**
+
+| rhwp 모듈/기능 | 본 모듈이 사용하는 방법 |
+|---|---|
+| `rhwp::document_core::DocumentCore` | `analyze_template`, `fill_template` 의 모든 IR 조작 — `from_bytes`, `create_table_native`, `insert_text_in_cell_native`, `apply_cell_style_native`, `apply_style_native`, `split_paragraph_native`, `begin_batch_native`, `end_batch_native`, `export_hwp_native` 등 |
+| `rhwp::parser::parse_document` | HWP 5.0 / HWPX 자동 포맷 감지 파싱 |
+| `rhwp::error::HwpError` | 에러 타입 — Python `RuntimeError("HwpError: ...")` 로 매핑 |
+| `rhwp::model::control::Control::Table`, `model::table::{Table, Cell}` | 표 IR — `discover_all_tables` 가 직접 순회하여 표 인벤토리 구축 |
+| `rhwp::parser::cfb_reader::LenientCfbReader` | 비표준 CFB 메타 가진 양식의 lenient 파싱 — `merge_cfb_preserving_input` 에서 BinData 보존 우회용 |
+| `rhwp::serializer::mini_cfb::build_cfb` | rhwp 의 자체 CFB v3 writer — `merge_cfb_preserving_input` 결과를 한컴 호환 CFB 로 작성 |
+
+**의존 방식:** 본 모듈의 `Cargo.toml` 에 `rhwp = { path = "../../codebase/rhwp", default-features = false }` 로 path 의존. **rhwp 코드는 일절 수정하지 않음** — upstream 그대로 사용.
+
+**왜 rhwp 인가:** Mac/Linux/Windows 어디서든 한컴오피스 설치 없이 .hwp 처리가 가능한 유일한 성숙한 오픈소스 엔진. 본 모듈의 모든 신뢰성(라운드트립 무결성, 한컴 호환 출력, IR 정확도)은 rhwp 의 결과물입니다.
+
+**우회 우리 코드:** rhwp v0.7.x 의 BinData (이미지 BMP 등) 라운드트립 충실도 한계가 있어 (이미지가 미세하게 변형되거나 한컴이 "손상" 으로 판정 가능), 본 모듈은 `LenientCfbReader` 와 `mini_cfb` 를 사용한 stream-level 머지 우회법(`preserve_images=True`, 기본 활성)으로 BinData/Preview 를 입력 양식에서 byte-for-byte 보존합니다. 이 우회는 rhwp 의 lenient/builder 모듈을 그대로 활용하며, rhwp 자체의 개선이 이루어지면 자연스럽게 단순해질 수 있습니다.
+
+### 🪝 hop — 패턴 출처 (참고만, 직접 의존 안 함)
+
+- **저자:** golbin ([@golbin](https://github.com/golbin))
+- **저장소:** https://github.com/golbin/hop
+- **라이선스:** MIT
+- **설명:** Tauri 2 기반 macOS/Windows/Linux 데스크톱 HWP 뷰어·에디터. rhwp 를 third_party 서브모듈로 통합한 운영 환경 사례.
+
+**본 모듈이 hop 에서 흡수한 설계 패턴:**
+
+| hop 의 코드 | 본 모듈이 영향받은 부분 |
+|---|---|
+| `apps/desktop/src-tauri/src/state.rs::editable_core_from_bytes` | `analyze_template` / `fill_template` 의 표준 진입점 — `DocumentCore::from_bytes(bytes)` 한 줄로 양식 로드 |
+| `commands.rs::mutate_document(doc_id, operation, args, ...)` JSON dispatcher | `fill_template(operations: list[dict])` 의 다중 op 디자인 — 한 호출에 여러 fill 작업 묶기 |
+| `commands.rs::query_document(doc_id, query, args)` JSON 쿼리 dispatcher | `analyze_template` 의 read-only 인벤토리 반환 패턴 |
+| Hop 의 `expected_revision` 동시성 보호 | 향후 동시 편집 안전망 (현재 미구현, 패턴만 인지) |
+| `apps/desktop/src-tauri/src/commands.rs::commit_staged_hwp_save` 의 atomic save | 운영 자동화 시 사용자 원본 파일 보호 (현재 본 모듈은 별도 출력 경로 사용으로 우회) |
+
+**의존 방식:** **직접 코드 의존 없음.** hop 의 코드를 읽고 좋은 패턴을 본 모듈 설계에 흡수. hop 자체는 GUI 데스크톱 앱이라 우리 Python 헤드리스 자동화와 다른 영역.
+
+**왜 hop 패턴인가:** rhwp 를 production 환경에서 어떻게 쓰는지 보여주는 가장 완성도 높은 사례. 그 코드를 읽으며 "DocumentCore.document 는 `pub(crate)` — 외부에선 만지지 말 것", "JSON 디스패처로 다중 op 를 한 트랜잭션으로", "외부 수정 감지 후 atomic rename" 같은 운영 정책을 자연스럽게 채택했습니다.
+
+### ⚙️ Python · Rust 빌드 라이브러리
+
+| 라이브러리 | 용도 | 라이선스 |
+|---|---|---|
+| [PyO3](https://github.com/PyO3/pyo3) | Rust ↔ Python FFI 바인딩 | Apache-2.0 / MIT |
+| [maturin](https://github.com/PyO3/maturin) | PyO3 wheel 빌드 | MIT |
+| [pytest](https://github.com/pytest-dev/pytest) | 테스트 (`tests/test_svg_regression.py`) | MIT |
+| Rust toolchain (cargo, rustc) | 컴파일 | MIT/Apache-2.0 |
+
+### 한글 / 한컴 상표 안내
+
+- **"한글", "한컴", "HWP", "HWPX"** 는 주식회사 한글과컴퓨터의 등록 상표입니다.
+- 본 프로젝트는 한글과컴퓨터와 제휴, 후원, 승인 관계가 없는 **독립적인 오픈소스 작업**입니다.
+- HWP 5.0 바이너리 포맷 처리는 rhwp 가 한글과컴퓨터의 공개 문서를 참고하여 구현한 결과를 활용합니다.
+
+### 본 모듈의 위치·범위
+
+- **목적:** rhwp 엔진을 Python 에서 호출 가능하게 노출 + 양식 자동 채우기 편의 API
+- **상태:** PoC 단계 (proof-of-concept). 사용자 내부 업무 자동화 목적
+- **외부 배포·재배포 시:** rhwp / hop / Hangul/Hancom 상표 표기 의무 준수 필수
+- **wheel 의 abi3 보장 범위:** Python 3.9 ~ 3.14 동일 wheel 호환 (각 OS 별 별도 빌드 필요)

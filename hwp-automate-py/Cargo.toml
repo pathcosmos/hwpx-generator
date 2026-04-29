@@ -12,3 +12,5 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module", "abi3-py39"] }
 rhwp = { path = "../../codebase/rhwp", default-features = false }
+# 주의: 별도 cfb crate 는 strict 파싱이라 rhwp 의 mini_cfb 출력을 못 읽음.
+# 대신 rhwp 자체의 parser::cfb_reader::LenientCfbReader + serializer::mini_cfb 사용.
