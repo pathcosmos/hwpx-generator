@@ -6,7 +6,14 @@
 
 한컴오피스 한글(Hangul)의 XML 기반 문서 형식인 HWPX 파일을 프로그래밍 방식으로 생성하는 도구. 정부 사업계획서, 주간/월간 보고서 등 복잡한 양식 문서의 자동 생성을 목표로 한다.
 
-**핵심 전략**: XML 직접 수정 + COM 텍스트 교체/PDF 변환의 **하이브리드 방식**.
+**핵심 전략**: 두 자동화 경로를 보유하며 시나리오에 따라 선택한다.
+
+| 경로 | 위치 | 환경 | 강점 |
+|------|------|------|------|
+| **A. Python + lxml + COM** (기존 하이브리드) | 루트 + `src/` | WSL/Ubuntu + Windows 한컴 | HWPX XML 직접 편집, 한컴 PDF 변환 충실도 |
+| **B. Rust + rhwp** (크로스플랫폼, COM 불필요) | `hwp-automate-poc/`, `hwp-automate-py/` | macOS/Linux/Windows 모두 | HWP 5.0 binary 처리, 한컴 설치 없이 동작, IR 안전 변형 |
+
+경로 B 의 상세는 본 문서 [Rust + rhwp 경로](#rust--rhwp-경로-크로스플랫폼-com-불필요) 절 참고.
 
 ## 실행 환경
 
@@ -40,7 +47,146 @@ JSON Input → field_mapper.py → hwpx_editor.py (XML 직접 수정, WSL)
 | `src/pdf_compare.py` | WSL | PDF SSIM + 텍스트 비교 |
 | `src/extract_template.py` | WSL | HWPX 구조 분석 + 템플릿 설정 초안 생성 |
 
+## Rust + rhwp 경로 (크로스플랫폼, COM 불필요)
+
+기존 Python+lxml+COM 하이브리드와 **나란히** 동작하는 두 번째 자동화 경로. macOS/Linux/Windows 모두에서 한컴오피스 설치 없이 .hwp(HWP 5.0 binary) 처리 가능.
+
+### 언제 이 경로를 선택?
+
+| 시나리오 | 권장 경로 |
+|----------|----------|
+| Mac/Linux dev 환경, 한컴 미설치 | **B. Rust + rhwp** |
+| 표/스타일 IR 직접 조작 (헤더 매칭, 컬럼 자동 탐색) | **B. Rust + rhwp** |
+| HWP 5.0 binary 직접 다루기 | **B. Rust + rhwp** |
+| HWPX 직접 XML 편집이 이미 동작 중 | A. Python + lxml |
+| 한컴 PDF 변환 충실도 필요 | A. Python + COM |
+| 폼 필드 (양식 입력 필드 채우기) | A. Python + COM (또는 향후 hwpctl Field API) |
+
+### 위치
+
+```
+hwpx-generator/
+├── hwp-automate-poc/      Rust PoC (3 시나리오 검증된 데모, binary)
+└── hwp-automate-py/       Python 바인딩 (PyO3 abi3-py39 wheel)
+../codebase/rhwp/          rhwp 엔진 (gh repo clone edwardkim/rhwp; 별도 codebase)
+../codebase/hop/           Tauri 데스크톱 앱 (참고 패턴 출처)
+```
+
+두 서브프로젝트의 `Cargo.toml` 은 `rhwp = { path = "../../codebase/rhwp" }` 로 path 의존. 동료 머신으로 옮길 때 `codebase/rhwp` 가 같은 상대 위치에 있어야 함. 운영용은 향후 hop 처럼 git submodule(third_party/rhwp) 패턴으로 vendor 고정 가능.
+
+### 빠른 시작
+
+#### Rust 측 — PoC binary 직접 실행
+
+```bash
+cd hwp-automate-poc
+cargo run                                       # 기본: biz_plan.hwp 의 자격증 컬럼 자동 채우기
+cargo run -- <template.hwp> <output.hwp>        # 다른 양식 지정
+# 결과: hwp-automate-poc/output/poc_v3.hwp
+```
+
+> **원칙**: 새 문서를 from-scratch 로 빌드하는 패턴은 본 경로에서 사용하지 않는다. 항상 사용자가 제공한 양식(.hwp) 을 베이스로 한다.
+
+#### Python 측 — venv 에 wheel 설치 후 import
+
+```bash
+cd hwp-automate-py
+python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade maturin
+maturin develop --release       # rhwp 컴파일 + abi3 wheel 빌드 + venv 설치 (~30초)
+```
+
+```python
+import hwp_automate
+
+# 1. 분석 — 양식의 표/스타일/번호 인벤토리 (read-only)
+info = hwp_automate.analyze_template("template.hwp")
+# {'tables': [...], 'style_count': 26, 'numbering_count': 8, ...}
+
+# 2. 양식 표 자동 채우기 — 헤더 매칭으로 컬럼 자동 탐색
+hwp_automate.fill_template_table(
+    "template.hwp", "filled.hwp",
+    {"header_match": "성명", "column": "자격증",
+     "values": {1: "정보처리기사", 2: "정보보안기사", 3: "네트워크관리사", 4: "컴활 1급"}}
+)
+```
+
+### 검증된 능력 (PoC v1~v3 + Python 바인딩)
+
+| # | 능력 | 검증 방법 |
+|---|------|----------|
+| 1 | 양식 로드 + 표 인벤토리 | `DocumentCore::from_bytes` 로 사용자 양식 로드, 8개 표 자동 발견 |
+| 2 | 헤더 매칭으로 표 식별 | "성명" 텍스트 포함된 5×6 표 자동 선택 (인덱스 하드코딩 없음) |
+| 3 | 컬럼 헤더로 위치 자동 탐색 | "자격증" 헤더 → col=5 자동 산출 (양식 변경에도 견딤) |
+| 4 | 빈 셀에 값 정확 삽입 | row 단위 4명 자격증 채움, 라운드트립 4/4 일치 |
+| 5 | 양식의 다른 부분 무손상 보존 | 8개 표 중 7개 + 모든 텍스트·스타일·이미지 그대로 |
+
+### 한계 (rhwp v0.7.x 기준)
+
+- **outline 자동 번호 SVG 미렌더** — IR (`head=Outline`) 은 정확하나 rhwp v0.7.x SVG 렌더러가 자동 번호 텍스트를 안 그림. **한컴/모바일 한글에서 열면 정상 표시.**
+- **HWPX 직렬화 표/그림 부분 미완** — Stage 3~5 이월. HWP 5.0 binary 저장은 안정적이므로 출력은 .hwp 권장.
+- **HWPX 출처 문서 저장 비활성화** (rhwp #196) — HWPX→HWP 완전 변환기(#197) 미완. 입력도 가급적 HWP 5.0 binary.
+- **Document IR 외부 직접 변형 불가** — `DocumentCore.document` 가 `pub(crate)`. 모든 변경은 `*_native` 메서드 경유.
+- **`@rhwp/core` npm 미배포** — Node 직접 사용 비추. Python(PyO3) 또는 Rust 라이브러리 경유.
+
+### 빌드 환경
+
+| 도구 | 최소 버전 | 설치 (macOS) |
+|------|----------|-------------|
+| Rust | 1.75+ | `brew install rust` (검증: 1.95.0) |
+| maturin | 1.13+ | `brew install maturin` 또는 venv 안에서 `pip install maturin` |
+| Xcode CLT | clang 21+ | `xcode-select --install` (이미 설치됨) |
+| Python | 3.9+ | abi3-py39 wheel 이라 3.9~3.14 호환 |
+
+### 함정 (Python+lxml 경로와 다름)
+
+이 경로는 **rhwp 가 IR 단계에서 검증** (891+ 테스트) 하므로 다음 함정들에 노출되지 않음:
+- XML 선언부 형식 민감성 → rhwp 직렬화기가 처리
+- ZIP 압축 방식 보존 → HWP 5.0 binary 는 ZIP 아님 (CFB)
+- charPrIDRef 보존 → IR 의 char_shape_id 가 자동 매핑
+- 네임스페이스 보존 → rhwp 가 OOXML 처리 시 자동
+- 좀비 한글 프로세스 → COM 미사용
+- PrintMethod=4 PDF 버그 → COM 미사용
+
+대신 새로 인지할 함정은 다음 절 참고.
+
+### Rust+rhwp 경로 함정
+
+1. **양식 채우기만 사용 — from-scratch 빌드 금지**
+   - `create_blank_document_native` / `Document::default` 같은 from-scratch 진입점은 본 경로에서 **절대 사용 금지**.
+   - 이유: 사용자 도메인(공공/기업 양식 자동화) 은 기관 표준 템플릿의 구조·스타일·로고를 충실히 보존해야 하며, from-scratch 빌드는 이를 만족할 수 없음.
+   - 항상 사용자가 제공한 .hwp 양식을 `DocumentCore::from_bytes` 로 로드해 빈 셀에만 값을 삽입하는 패턴을 사용.
+
+2. **셀 인덱스는 row-major linear** — `cell_idx = row * cols + col`. 사용 전 표 헤더 매칭으로 cols 확인 필수.
+
+3. **빈 cell 의 paragraphs 는 항상 ≥1** — HWP 표는 모든 셀에 최소 1개 문단 보장. 빈 텍스트 셀이라도 `cell.paragraphs[0]` 접근 가능.
+
+4. **path 의존 절대경로 함정** — Cargo.toml 의 `path = "../../codebase/rhwp"` 는 상대 경로. CI/배포 시 디렉토리 레이아웃 보장 필요.
+
+### 진입점 — Python (PyO3 노출 + CLI)
+
+**Rust 확장 모듈 함수 3개** (`hwp_automate.*`):
+
+| 함수 | 용도 |
+|------|------|
+| `analyze_template(path)` | 양식 표·스타일·번호 인벤토리 (read-only) |
+| `fill_template(template, out, operations, dry_run=False, verify=True)` ★ | 여러 표·여러 컬럼·여러 셀 일괄 채우기. Pre-flight + post-fill 검증 |
+| `fill_template_table(template, out, mapping, ...)` | 단일 표·단일 컬럼 편의 wrapper |
+
+**Python 보조 모듈** (`hwp_automate_cli/`, wheel 비번들):
+
+| 모듈 | 용도 |
+|------|------|
+| `hwp_automate_cli.field_map_to_operations(field_map, data, table_locator)` | 기존 `field_map.json` (entity_blocks + company_lists) → operations 어댑터 |
+| `python -m hwp_automate_cli analyze \| fill \| cell` | CLI 진입점 — 양식 인벤토리, field_map+data 일괄, 빠른 셀 채우기 |
+
+상세 사용법은 `hwp-automate-py/README.md` 참조.
+
+> **의도적으로 노출하지 않는 것**: from-scratch 로 새 문서를 만드는 함수 (예: `create_blank_document_native` 래퍼). 본 경로의 자동화 원칙 — "사용자 양식만 채운다" — 을 강제하기 위함.
+
 ## HWPX 파일 수정 시 필수 주의사항
+
+> **적용 범위**: 이 절은 **경로 A (Python + lxml)** 에 한정. 경로 B (Rust + rhwp) 는 IR 단계에서 rhwp 가 처리하므로 이 함정들에 노출되지 않음.
 
 ### 1. XML 선언부 (가장 빈번한 오류 원인)
 
@@ -95,6 +241,8 @@ HWPX XML은 12개 이상의 네임스페이스를 사용한다. `xml.etree.Eleme
 **참고: 문서별 charPrIDRef 값이 다르다** — 같은 "본문 텍스트"라도 문서마다 ID가 다를 수 있으므로, 새 문서 작업 시 반드시 해당 문서의 header.xml에서 확인해야 한다.
 
 ## COM 자동화 주의사항
+
+> **적용 범위**: 이 절은 **경로 A (Python + COM)** 에 한정. 경로 B (Rust + rhwp) 는 COM 을 사용하지 않음.
 
 ### 좀비 프로세스
 

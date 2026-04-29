@@ -1,5 +1,84 @@
 # Changelog
 
+## [2026-04-29] Rust + rhwp 자동화 경로 추가 (cross-platform, COM 불필요)
+
+**커밋**: `39e4070` — Add Rust+rhwp automation path (cross-platform HWP filling)
+**PR**: [#1](https://github.com/pathcosmos/hwpx-generator/pull/1)
+
+기존 **경로 A (Python + lxml + COM)** 와 나란히 동작하는 **경로 B (Rust + rhwp)** 를 추가. macOS / Linux / Windows 어디서나 한컴오피스 설치 없이 .hwp(HWP 5.0 binary) 양식을 자동 채우기 가능.
+
+> **원칙**: from-scratch 로 새 문서를 만드는 패턴은 노출하지 않는다. 사용자 양식을 베이스로 빈 셀에만 값 삽입하는 패턴만 지원.
+
+---
+
+### 신규 sub-project
+
+| 디렉토리 | 역할 |
+|---------|------|
+| `hwp-automate-poc/` | **Rust binary** — 기존 양식의 표 자동 채우기 데모 (헤더 매칭 → 컬럼 자동 탐색 → 라운드트립 검증) |
+| `hwp-automate-py/` | **PyO3 abi3-py39 Python 바인딩** — Python 3.9~3.14 어디서나 단일 wheel 사용 |
+| `hwp-automate-py/hwp_automate_cli/` | Python 보조 도구 — field_map.json 어댑터 + argparse CLI (analyze / fill / cell) |
+
+### 외부 의존 (별도 git clone, 본 repo 비포함)
+
+| 위치 | 출처 | 라이선스 |
+|-----|------|---------|
+| `../codebase/rhwp/` | [edwardkim/rhwp](https://github.com/edwardkim/rhwp) | MIT |
+| `../codebase/hop/` | [golbin/hop](https://github.com/golbin/hop) (`DocumentCore::from_bytes` 패턴 출처) | MIT |
+
+### Python API (PyO3 노출, `hwp_automate.*`)
+
+| 함수 | 용도 |
+|------|------|
+| `analyze_template(path)` | 양식 표·스타일·번호 인벤토리 (read-only) |
+| `fill_template(template, out, operations, dry_run=False, verify=True)` ★ | 다중 표·다중 컬럼·다중 셀 일괄 채우기. **Pre-flight + post-fill verify + dry_run** |
+| `fill_template_table(template, out, mapping, ...)` | 단일 표·단일 컬럼 편의 wrapper |
+
+### CLI
+
+```bash
+python -m hwp_automate_cli analyze --template 양식.hwp
+python -m hwp_automate_cli fill    --template 양식.hwp --field-map ... --data ... --output ...
+python -m hwp_automate_cli cell    --template 양식.hwp --output ... --header-match 성명 --cell 1,5,값
+```
+
+### 안전 메커니즘
+
+- **Pre-flight 검증** — 모든 operation 의 표·컬럼·범위가 유효한지 적용 전에 확인. 잘못된 op 1개라도 있으면 양식 무수정 (silent corruption 방지).
+- **Post-fill 라운드트립 검증** — 저장 후 재파싱하여 모든 셀 값이 정확히 보존됐는지 자동 확인. 불일치 시 `RuntimeError`.
+- **`dry_run` 모드** — 실제 적용·저장 없이 plan 만 검증·반환.
+
+### CLAUDE.md 업데이트
+
+- 두 경로 비교표 (프로젝트 개요)
+- 경로 B 전용 섹션 (위치, 사용법, 검증된 능력 5가지, 한계, 함정, 진입점)
+- 기존 절들에 적용 범위 표기 (`HWPX 파일 수정 시 주의사항`, `COM 자동화 주의사항`)
+
+---
+
+### 수치 요약
+
+| 항목 | 값 |
+|------|---|
+| 변경 파일 | 15 개 |
+| 추가 행 | +4,189 |
+| 삭제 행 | −1 |
+| 신규 sub-project | 2 개 (Rust binary + Python 바인딩) |
+
+### 검증
+
+- 7 단계 자동 회귀 통과: analyze, fill_template 다중 op, dry_run, pre-flight 보호, CLI 호출, field_map.json 어댑터, legacy 호환
+- 사용자 시각 검증 통과 (한컴에서 poc_v3.hwp 열어 확인)
+- biz_plan.hwp 8 개 표 자동 발견, 5×6 인력표 자격증 4 셀 100% 라운드트립
+
+### 알려진 한계 / 향후
+
+- **Mac arm64 wheel 만 현재 빌드** → GitHub Actions matrix 로 macOS+Linux+Windows 자동 빌드 예정
+- **rhwp v0.7.x SVG 렌더러는 outline 자동 번호 미렌더** → 한컴/모바일에서는 정상 표시
+- 실 양식 검증은 사용자 양식 1 개와 함께 진행 예정
+
+---
+
 ## [2026-03-08] Two-Pass Hybrid Form Filler Pipeline
 
 **커밋**: `222eb7d` — HWPX form filler pipeline: two-pass hybrid system

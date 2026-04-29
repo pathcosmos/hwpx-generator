@@ -1,0 +1,14 @@
+# Cargo build artifacts
+/target/
+**/*.rs.bk
+
+# Python venv (already covered by parent .gitignore but kept here for clarity)
+.venv/
+__pycache__/
+*.so
+*.pyd
+*.dylib
+dist/
+
+# Output
+/output/

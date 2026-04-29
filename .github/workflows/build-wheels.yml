@@ -1,0 +1,94 @@
+name: Build wheels (Rust + rhwp 경로)
+
+# 경로 B 의 Python wheel 을 macOS / Linux / Windows 에서 자동 빌드.
+# - PR 마다 / main push 마다 트리거
+# - abi3-py39 wheel: OS 한 곳에서 빌드한 wheel 이 그 OS 의 모든 Python 3.9~3.14 호환
+# - Mac + Linux 에서는 회귀 테스트도 함께 실행 (rhwp CLI 빌드 + pytest)
+# - 빌드된 wheel 은 artifact 로 30 일 보존
+#
+# 보안 메모: 본 workflow 는 github.event.* 의 user-controlled 입력 (PR/이슈 본문 등)을
+# shell 명령에 절대 보간하지 않는다. 모든 동적 값은 matrix.os (predefined) 또는 env var
+# (GITHUB_WORKSPACE 같은 시스템 변수) 만 사용. command injection 위험 없음.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'hwp-automate-py/**'
+      - 'hwp-automate-poc/**'
+      - '.github/workflows/build-wheels.yml'
+  pull_request:
+    paths:
+      - 'hwp-automate-py/**'
+      - 'hwp-automate-poc/**'
+      - '.github/workflows/build-wheels.yml'
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  build:
+    name: Build wheel (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout hwpx-generator
+        uses: actions/checkout@v4
+
+      # Cargo.toml 의 `rhwp = { path = "../../codebase/rhwp" }` 가 형제 위치를 요구.
+      # checkout 은 workspace 자체로 들어가므로, 그 부모에 codebase/ 를 만든다.
+      - name: Clone rhwp engine into sibling codebase/
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/.."
+          mkdir -p codebase
+          git clone --depth 1 https://github.com/edwardkim/rhwp.git codebase/rhwp
+          ls codebase/rhwp | head -5
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: hwp-automate-py
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install maturin
+        run: pip install --upgrade maturin
+
+      - name: Build abi3 wheel (release)
+        working-directory: hwp-automate-py
+        run: maturin build --release
+
+      - name: List built wheel
+        shell: bash
+        working-directory: hwp-automate-py
+        run: ls -la target/wheels/
+
+      # Windows 는 회귀 생략 — rhwp CLI 첫 빌드 안정성 미검증. wheel 빌드만 확인.
+      - name: Run regression tests (Mac & Linux only)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        working-directory: hwp-automate-py
+        run: |
+          # V3 SVG diff 테스트에 rhwp CLI 필요
+          (cd ../../codebase/rhwp && cargo build --bin rhwp)
+          # 빌드된 wheel 설치 + pytest
+          pip install --force-reinstall target/wheels/hwp_automate-*.whl
+          pip install pytest
+          python -m pytest tests/ -v
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hwp_automate-wheel-${{ matrix.os }}
+          path: hwp-automate-py/target/wheels/*.whl
+          retention-days: 30
+          if-no-files-found: error
