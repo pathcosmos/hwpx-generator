@@ -207,6 +207,39 @@ fn find_cell_idx(table: &TableLocation, row: u16, col: u16) -> Option<usize> {
     table.cells.iter().position(|(r, c, _)| *r == row && *c == col)
 }
 
+/// 빈 셀 (row, col) 의 의미를 추론하기 위해 인접 텍스트 셀을 라벨로 추정.
+///
+/// 한국 표 양식의 통상 패턴:
+///   1순위: 같은 행의 왼쪽 셀 (라벨-값이 가로 페어, 예: "기업명 | (값)")
+///   2순위: 같은 열의 위쪽 셀 (헤더 행 또는 위 라벨, 예: 컬럼 헤더 + 값)
+///
+/// AI 가 양식 의미를 추론하는 데 가장 큰 단서. 추론 실패 시 None.
+fn find_neighbor_label(cells: &[(u16, u16, String)], row: u16, col: u16) -> Option<String> {
+    // 1순위: 같은 행 왼쪽 — 가장 가까운 비지 않은 셀
+    if col > 0 {
+        for c in (0..col).rev() {
+            if let Some((_, _, txt)) = cells.iter().find(|(r, cc, _)| *r == row && *cc == c) {
+                let trimmed = txt.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    // 2순위: 같은 열 위쪽 — 가장 가까운 비지 않은 셀
+    if row > 0 {
+        for r in (0..row).rev() {
+            if let Some((_, _, txt)) = cells.iter().find(|(rr, c, _)| *rr == r && *c == col) {
+                let trimmed = txt.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// 양식의 모든 표 인벤토리.
 fn discover_all_tables(core: &DocumentCore) -> Vec<TableLocation> {
     let mut out = Vec::new();
@@ -467,6 +500,8 @@ fn analyze_template<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
         entry.set_item("control", t.control)?;
         entry.set_item("rows", t.rows)?;
         entry.set_item("cols", t.cols)?;
+
+        // 헤더 행 (row 0) 텍스트 — 표의 의미 식별자
         let header: Vec<&str> = t
             .cells
             .iter()
@@ -474,6 +509,56 @@ fn analyze_template<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyD
             .map(|(_, _, txt)| txt.as_str())
             .collect();
         entry.set_item("header", header)?;
+
+        // 모든 셀 + 빈 셀 + suggested_fields 동시 빌드 (AI 가 의미 추론하는 핵심 단서)
+        let cells_list = PyList::empty_bound(py);
+        let empty_cells_list = PyList::empty_bound(py);
+        let suggested_fields = PyList::empty_bound(py);
+
+        for (r, c, txt) in &t.cells {
+            let is_empty = txt.trim().is_empty();
+            let neighbor_label = if is_empty {
+                find_neighbor_label(&t.cells, *r, *c)
+            } else {
+                None
+            };
+
+            // cells (전체)
+            let cell_dict = PyDict::new_bound(py);
+            cell_dict.set_item("row", *r)?;
+            cell_dict.set_item("col", *c)?;
+            cell_dict.set_item("text", txt)?;
+            cell_dict.set_item("is_empty", is_empty)?;
+            if let Some(lbl) = &neighbor_label {
+                cell_dict.set_item("neighbor_label", lbl)?;
+            }
+            cells_list.append(cell_dict)?;
+
+            // empty_cells (빠른 lookup)
+            if is_empty {
+                let ec = PyDict::new_bound(py);
+                ec.set_item("row", *r)?;
+                ec.set_item("col", *c)?;
+                if let Some(lbl) = &neighbor_label {
+                    ec.set_item("neighbor_label", lbl)?;
+                }
+                empty_cells_list.append(ec)?;
+
+                // suggested_fields: 라벨 추론 성공한 빈 셀만 포함
+                if let Some(lbl) = &neighbor_label {
+                    let sf = PyDict::new_bound(py);
+                    sf.set_item("label", lbl)?;
+                    sf.set_item("row", *r)?;
+                    sf.set_item("col", *c)?;
+                    suggested_fields.append(sf)?;
+                }
+            }
+        }
+
+        entry.set_item("cells", cells_list)?;
+        entry.set_item("empty_cells", empty_cells_list)?;
+        entry.set_item("suggested_fields", suggested_fields)?;
+
         tables_out.append(entry)?;
     }
     result.set_item("tables", tables_out)?;

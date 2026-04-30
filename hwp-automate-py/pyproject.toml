@@ -12,6 +12,14 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 
+[project.optional-dependencies]
+# MCP 서버 (Claude Desktop / Claude Code / 기타 MCP 호환 클라이언트)는
+# Python 3.10+ 가 필요한 mcp SDK 에 의존. abi3 wheel 자체는 3.9 호환 유지.
+mcp = ["mcp[cli]>=1.2.0; python_version >= '3.10'"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.maturin]
 features = ["pyo3/extension-module"]
 module-name = "hwp_automate"
