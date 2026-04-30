@@ -8,6 +8,12 @@
 
 ```python
 import hwp_automate
+
+# 분석 — AI 가 양식 의미를 즉시 파악
+info = hwp_automate.analyze_template("양식.hwp")
+# info["tables"][i]["suggested_fields"] → [{"label":"업종명","row":1,"col":6}, ...]
+
+# 채우기 — 다중 표·다중 셀, dry_run+verify+preserve_images 자동
 hwp_automate.fill_template(
     "양식.hwp", "결과.hwp",
     [
@@ -22,18 +28,32 @@ hwp_automate.fill_template(
 
 ```
 hwp-automate-py/
-├── Cargo.toml                  pyo3 0.22 + abi3-py39 + rhwp path 의존
-├── pyproject.toml              maturin 빌드 설정
+├── Cargo.toml                   pyo3 0.22 + abi3-py39 + rhwp path 의존
+├── pyproject.toml               maturin + mcp optional + pytest config
 ├── src/
-│   └── lib.rs                  Rust 확장 모듈 — 3개 함수 노출 (~430줄)
-├── hwp_automate_cli/           Python 보조 도구 (wheel 비번들)
-│   ├── __init__.py             field_map_to_operations 등 export
-│   ├── field_map.py            field_map.json → operations 어댑터
-│   └── __main__.py             CLI 진입점 (analyze / fill / cell)
-├── .venv/                      격리 venv (gitignore 됨)
-├── target/                     cargo build (gitignore 됨)
-└── output/                     테스트 출력 (gitignore 됨)
+│   └── lib.rs                   ★ Rust 확장 모듈 — 4 함수 노출 (~700줄)
+│                                  analyze_template / fill_template /
+│                                  fill_template_table / preserve_images_from_source
+├── mcp_server.py                ★ FastMCP stdio 서버 (5 tools)
+├── hwp_automate_cli/            Python 보조 도구 (wheel 비번들)
+│   ├── __init__.py
+│   ├── field_map.py             field_map.json → operations 어댑터
+│   └── __main__.py              CLI 진입점 (analyze / fill / cell)
+├── tests/
+│   └── test_svg_regression.py   ★ SVG 글자 멀티셋 회귀 (3 testcase)
+├── .venv/                       격리 venv (gitignore)
+├── target/                      cargo build (gitignore)
+└── output/                      테스트 출력 / V1_*.hwp (gitignore)
 ```
+
+## API 함수 4 개 + MCP tools 5 개 + CLI 3 명령
+
+| 진입점 | 함수/명령 | 위치 |
+|---|---|---|
+| Rust 확장 (Python 직접 호출) | `analyze_template`, `fill_template`, `fill_template_table`, `preserve_images_from_source` | `src/lib.rs` |
+| MCP 서버 (stdio) | `analyze_form`, `preview_form_structure`, `fill_form`, `fill_form_from_data`, `verify_output` | `mcp_server.py` |
+| Python CLI (`python -m hwp_automate_cli`) | `analyze`, `fill`, `cell` | `hwp_automate_cli/__main__.py` |
+| (이 저장소 외부) Claude Code Skill | `/fill-hwp 양식.hwp` | `../.claude/skills/fill-hwp/SKILL.md` |
 
 ## 사전 요구사항
 
@@ -81,9 +101,9 @@ pip install /path/to/hwp-automate-py/
 
 ### `analyze_template(path: str) -> dict`
 
-양식 HWP 의 구조·스타일·표 인벤토리를 dict 로 반환. 부작용 없음.
+양식 HWP 의 구조·스타일·표 인벤토리·**셀 단위 상세 + 라벨 추론** 을 dict 로 반환. 부작용 없음. AI 가 양식 의미를 즉시 추론할 수 있도록 강화됨.
 
-**리턴 dict 키:**
+**리턴 dict 최상위 키:**
 
 | 키 | 타입 | 설명 |
 |----|------|------|
@@ -100,28 +120,72 @@ pip install /path/to/hwp-automate-py/
 | `style_names` | list[str] | 모든 스타일 한국어 이름 |
 | `tables` | list[dict] | 표 인벤토리 (아래) |
 
-각 `tables[i]` dict:
+**각 `tables[i]` dict:**
 
-| 키 | 설명 |
-|----|------|
-| `section`, `parent_para`, `control` | rhwp 의 위치 식별자 |
-| `rows`, `cols` | 표 크기 |
-| `header` | 헤더 행 (row 0) 의 셀 텍스트 list (`"|"` 로 다문단 결합) |
+| 키 | 타입 | 설명 |
+|----|------|------|
+| `section`, `parent_para`, `control` | int | rhwp 의 위치 식별자 |
+| `rows`, `cols` | int | 표 행/열 수 |
+| `header` | list[str] | 헤더 행 (row 0) 의 셀 텍스트 list (`"|"` 로 다문단 결합) |
+| `cells` | list[dict] | **★ NEW** 모든 셀 (rows×cols 가 아니라 병합 후 실제 셀 수) |
+| `empty_cells` | list[dict] | **★ NEW** 빈 셀만 + neighbor_label 추론 |
+| `suggested_fields` | list[dict] | **★ NEW** 라벨 추론 성공한 빈 셀 — AI 가 사용자에게 물어볼 후보 |
 
-**예시:**
+**`cells[i]` 형식:**
+
+| 키 | 타입 | 설명 |
+|----|------|------|
+| `row`, `col` | int | 셀 좌표 (0-indexed) |
+| `text` | str | 셀 텍스트 (다문단은 `"|"` 결합) |
+| `is_empty` | bool | `text.trim()` 이 비었는지 |
+| `neighbor_label` | str (선택) | `is_empty=True` 일 때 인접 셀에서 추론한 라벨. 같은 행 왼쪽 우선, 같은 열 위쪽 차순위. |
+
+**`empty_cells[i]` 형식:**
+
+| 키 | 타입 | 설명 |
+|----|------|------|
+| `row`, `col` | int | 빈 셀 좌표 |
+| `neighbor_label` | str (선택) | 라벨 추론 결과 (실패 시 키 없음) |
+
+**`suggested_fields[i]` 형식 — `empty_cells` 중 라벨 추론 성공한 항목만:**
+
+| 키 | 타입 | 설명 |
+|----|------|------|
+| `label` | str | 추론된 라벨 (사용자에게 물어볼 친화적 한국어) |
+| `row`, `col` | int | 채울 셀 좌표 |
+
+**예시 — 실 양식 (YCP 사업신청서) 의 기본정보 표:**
 
 ```python
-info = hwp_automate.analyze_template("biz_plan.hwp")
-print(info["style_count"])           # 26
-for t in info["tables"]:
-    print(f"{t['rows']}x{t['cols']} 헤더={t['header']}")
-# 5x6 헤더=['구분', '분야별', '성명', '기술등급', '경력(년)', '자격증']
-# ...
+info = hwp_automate.analyze_template("/path/to/사업신청서.hwp")
+
+basic_info = next(t for t in info["tables"] if t["parent_para"] == 6)
+print(f"표 크기: {basic_info['rows']}x{basic_info['cols']}")
+# 7x8
+
+print(f"빈 셀 수: {len(basic_info['empty_cells'])}")
+# 6
+
+for sf in basic_info["suggested_fields"]:
+    print(f"  '{sf['label']}' → (row={sf['row']}, col={sf['col']})")
+# '업종명' → (row=1, col=6)
+# '주생산품' → (row=2, col=6)
+# '매출액(백만원)' → (row=4, col=2)
+# '영업이익(백만원)' → (row=4, col=3)
+# '수출액(백만원)' → (row=4, col=5)
+# '부채비율(%)' → (row=4, col=7)
 ```
 
-### `fill_template(template_path, out_path, operations, *, dry_run=False, verify=True) -> dict` ★ (주력)
+이 결과만으로 AI 는 사용자에게 "**업종명, 주생산품, 매출액(백만원), 영업이익(백만원), 수출액(백만원), 부채비율(%) 을 알려주세요**" 라고 자연스러운 질문을 만들 수 있다.
 
-여러 표·여러 컬럼·여러 셀을 한 번의 호출로 채움. **Pre-flight 검증** (모든 op 가 유효한지 적용 전에 확인) 후 batch 모드로 일괄 적용, **post-fill 검증** (저장한 결과를 재파싱하여 모든 셀 값 보존 확인).
+**라벨 추론 규칙 (`find_neighbor_label`):**
+1. **1순위 — 같은 행 왼쪽 셀** (한국 양식의 라벨-값 가로 페어 패턴: "기업명 | (값)")
+2. **2순위 — 같은 열 위쪽 셀** (헤더 행 또는 위 라벨)
+3. 둘 다 비어 있으면 추론 실패 → `neighbor_label` 키 없음, `suggested_fields` 에서 제외
+
+### `fill_template(template_path, out_path, operations, *, dry_run=False, verify=True, preserve_images=True) -> dict` ★ (주력)
+
+여러 표·여러 컬럼·여러 셀을 한 번의 호출로 채움. **Pre-flight 검증** (모든 op 유효성 확인) → batch 적용 → **post-fill 검증** (라운드트립 재파싱) → **BinData/Preview 보존** (rhwp 라운드트립 손실 우회) 의 4 단계 자동.
 
 **`operations` 는 dict 의 list. 각 dict 형식:**
 
@@ -136,6 +200,7 @@ for t in info["tables"]:
 **옵션:**
 - `dry_run=True` — 실제 적용·저장 없이 plan 만 검증·반환 (status="dry_run", bytes=0)
 - `verify=False` — 저장 후 라운드트립 검증 생략 (기본 verify=True 권장)
+- `preserve_images=True` (기본) — 원본 양식의 BinData/Preview stream 을 byte-for-byte 보존하여 rhwp v0.7.x 의 이미지 라운드트립 손실 회피. **반드시 true 유지** (false 시 한컴이 양식을 "손상"으로 판정하거나 그림 일부 누락 가능). 이미지를 추가/삭제하는 변경이 아니면 안전.
 
 **리턴 dict:**
 
@@ -144,6 +209,7 @@ for t in info["tables"]:
 | `path`, `bytes` | 출력 경로/크기 (dry_run 이면 bytes=0) |
 | `status` | `"applied + verified"` / `"applied (verify=false)"` / `"dry_run"` / 실패 시 에러 |
 | `mismatches` | verify 모드에서 라운드트립 불일치 발견 시 메시지 list (정상이면 `[]`) |
+| `preserved_streams` | preserve_images=True 일 때 입력에서 보존된 stream 수 (BinData/Preview/etc 합) |
 | `operations` | input op 별 `{table: {section, parent_para, control, rows, cols}, applied: [{row, col, value}]}` |
 
 **예시 — 다중 op:**
@@ -180,7 +246,7 @@ r = hwp_automate.fill_template(
 - `RuntimeError` — `verify=True` 인데 라운드트립 불일치 발견 (drift 감지)
 - `IOError` — 파일 read/write 실패
 
-### `fill_template_table(template_path, out_path, mapping, *, dry_run=False, verify=True) -> dict`
+### `fill_template_table(template_path, out_path, mapping, *, dry_run=False, verify=True, preserve_images=True) -> dict`
 
 단일 표·단일 컬럼 편의 wrapper. 내부적으로 `fill_template` 한 번 호출. 기존 한 줄 호출 코드 호환성 보존.
 
@@ -193,6 +259,137 @@ hwp_automate.fill_template_table(
 ```
 
 리턴은 `fill_template` 과 동일.
+
+### `preserve_images_from_source(source_hwp, target_hwp, out_hwp) -> int`
+
+`source_hwp` 의 BinData/Preview 등 stream 을 byte-for-byte 보존하면서 `target_hwp` 의 BodyText/DocInfo/FileHeader 만 살린 새 CFB 를 `out_hwp` 로 저장.
+
+`fill_template` 의 `preserve_images=True` 가 자동 호출하지만, 별도 후처리가 필요할 때 단독 사용 가능.
+
+```python
+hwp_automate.preserve_images_from_source(
+    source_hwp="원본.hwp",       # 이미지 출처
+    target_hwp="rhwp_출력.hwp",  # rhwp 가 만든 셀 변경된 출력
+    out_hwp="최종.hwp",          # 머지된 결과
+)
+# → 보존된 stream 수 (int)
+```
+
+내부 동작: rhwp 의 `LenientCfbReader` 로 양 CFB 를 read, `mini_cfb::build_cfb` 로 새 컨테이너 작성. 외부 `cfb` crate 의 strict 검증 회피.
+
+## MCP 서버 (`mcp_server.py`)
+
+Claude Desktop / Claude Code / Cursor / 기타 MCP 호환 클라이언트가 자연어로 본 라이브러리를 사용할 수 있게 하는 FastMCP stdio 서버.
+
+### 설치
+
+```bash
+cd hwp-automate-py
+source .venv/bin/activate
+pip install --upgrade 'mcp[cli]>=1.2.0'   # Python 3.10+ 필요
+maturin develop --release                   # rhwp wheel 설치 (이미 했다면 건너뜀)
+```
+
+### 실행
+
+```bash
+# 직접 실행 (테스트용)
+python mcp_server.py
+
+# 또는 클라이언트가 자동 spawn (Claude Desktop config 등록 후)
+```
+
+### 노출 5 tools
+
+| tool | 인자 | 용도 |
+|------|------|------|
+| `analyze_form` | `template_path` | 양식 구조·빈 셀·라벨 추론 (analyze_template 그대로) |
+| `preview_form_structure` | `template_path` | 가벼운 markdown 요약 (큰 양식 첫 검토 시 컨텍스트 절약) |
+| `fill_form` | `template_path, output_path, operations, dry_run, verify, preserve_images` | 양식 채우기 (fill_template 그대로) |
+| `fill_form_from_data` | `template_path, output_path, field_map_path, data_path, table_locator, dry_run, skip_empty` | field_map.json + data.json 형식 자동 변환 후 채우기 |
+| `verify_output` | `output_path, expected_cells` | 결과 파일 셀 라운드트립 검증 |
+
+### Claude Desktop 등록
+
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) — 절대 경로 필수:
+
+```json
+{
+  "mcpServers": {
+    "hwp-automate": {
+      "command": "/abs/path/to/hwp-automate-py/.venv/bin/python",
+      "args": ["/abs/path/to/hwp-automate-py/mcp_server.py"]
+    }
+  }
+}
+```
+
+### Claude Code 등록
+
+```bash
+claude mcp add hwp-automate -- /abs/path/to/.venv/bin/python /abs/path/to/mcp_server.py
+```
+
+또는 프로젝트 루트의 `.mcp.json` 파일에:
+
+```json
+{
+  "mcpServers": {
+    "hwp-automate": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "--directory", "/abs/path/to/hwp-automate-py", "python", "mcp_server.py"]
+    }
+  }
+}
+```
+
+### 사용자 시나리오 (자연어 → MCP tool 호출)
+
+```
+사용자: /Users/me/사업신청서.hwp 양식 분석하고 우리 회사 데이터로 채워줘.
+        회사명=테크스타트, 대표자=김철수
+
+Claude: [analyze_form 호출]
+        → 16 표 발견, 표 [2] 기본정보 의 빈 셀 6개 발견:
+          업종명, 주생산품, 매출액(백만원), 영업이익(백만원), 수출액(백만원), 부채비율(%)
+
+        업종명·주생산품·재무현황 4개 항목도 알려주세요. (회사명·대표자는 이미 채워져 있음)
+
+사용자: 철강 특수강 제조 / 스테인리스 / 12500 / 1200 / 8300 / 45.2
+
+Claude: [fill_form 호출 with operations] → status: applied + verified, 6 셀 적용
+        결과: /Users/me/사업신청서_filled.hwp (35MB)
+        한컴/모바일 한글에서 열어 확인하세요.
+```
+
+### Smoke test (in-process)
+
+```bash
+cd hwp-automate-py && source .venv/bin/activate
+python -c "
+import asyncio
+from mcp_server import mcp
+async def t():
+    tools = await mcp.list_tools()
+    print(f'tools: {len(tools)}')
+    for x in tools: print(f'  - {x.name}')
+asyncio.run(t())
+"
+# tools: 5
+#   - analyze_form
+#   - preview_form_structure
+#   - fill_form
+#   - fill_form_from_data
+#   - verify_output
+```
+
+### 보안 / 안정성
+
+- **stdout 오염 방지** — 모든 진단 로그를 `sys.stderr` 로. import 시점에는 침묵.
+- **파일 경로 기반 설계** — 40MB+ 큰 HWP 도 메시지 크기 제약 없음 (path 만 전달).
+- **Pre-flight 검증** — 잘못된 fill 요청은 양식 무수정으로 안전하게 거부.
+- **Post-fill verify** — `preserve_images=True` 와 결합해 한컴이 받는 valid HWP 5.0 보장.
 
 ## CLI — `python -m hwp_automate_cli`
 
