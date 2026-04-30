@@ -184,6 +184,74 @@ hwp_automate.fill_template_table(
 
 > **의도적으로 노출하지 않는 것**: from-scratch 로 새 문서를 만드는 함수 (예: `create_blank_document_native` 래퍼). 본 경로의 자동화 원칙 — "사용자 양식만 채운다" — 을 강제하기 위함.
 
+## AI 통합 진입점
+
+경로 B 의 Python API 위에 세 가지 AI 통합 진입점이 layered. 사용자 환경에 따라 골라 쓰면 됨.
+
+### A. Claude Code Skill (`fill-hwp`)
+
+`.claude/skills/fill-hwp/SKILL.md` — Claude Code 사용자가 `/fill-hwp 양식.hwp` 한 명령으로 양식 채우기 시작. AI 가 자동 분석 → 사용자에게 필요 정보 질문 → 콘텐츠 생성 → fill_template 호출 → 검증 의 multi-turn playbook.
+
+`.claude/hooks/hwp-fill-verify.py` (PostToolUse) — fill 명령 후 출력 파일 자동 확인 (크기·CFB 매직).
+
+`.claude/settings.json` — hook 등록.
+
+**가장 빠른 진입점.** Claude Code 안에서 즉시 동작. 별도 설치 없음.
+
+### B. MCP 서버
+
+`hwp-automate-py/mcp_server.py` — FastMCP stdio 서버. Claude Desktop / Claude Code / Cursor 등 모든 MCP 호환 클라이언트에서 사용 가능.
+
+5 개 tool 노출:
+
+| tool | 용도 |
+|------|------|
+| `analyze_form` | 양식 구조·빈 셀·라벨 추론 결과 (AI 가 의미 파악) |
+| `preview_form_structure` | 가벼운 markdown 요약 (큰 양식 첫 검토) |
+| `fill_form` | operations 로 채우기 (dry_run, verify 지원) |
+| `fill_form_from_data` | 기존 field_map.json + data.json 호환 |
+| `verify_output` | 결과 파일 셀 값 라운드트립 검증 |
+
+설치 + 실행:
+
+```bash
+cd hwp-automate-py
+pip install --upgrade 'mcp[cli]>=1.2.0'   # Python 3.10+
+maturin develop --release                  # rhwp wheel 설치
+python mcp_server.py                       # 또는 클라이언트가 자동 spawn
+```
+
+Claude Desktop 설정 (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "hwp-automate": {
+      "command": "/path/to/hwp-automate-py/.venv/bin/python",
+      "args": ["/path/to/hwp-automate-py/mcp_server.py"]
+    }
+  }
+}
+```
+
+Claude Code 등록:
+
+```bash
+claude mcp add hwp-automate -- /path/to/.venv/bin/python /path/to/mcp_server.py
+```
+
+### C. (선택) Standalone CLI Agent
+
+`hwp-automate-py/hwp_automate_agent/` — 미작성. Claude Agent SDK 기반 자체 CLI. batch / cron / CI 시나리오에서만 가치. 1·2 단계 충분 검증 후 도입.
+
+### 분석 결과 강화 (모든 진입점 공통 전제)
+
+`analyze_template` 가 각 표의 `cells`, `empty_cells`, `suggested_fields` 를 노출.
+
+- `cells`: 모든 셀 (row, col, text, is_empty, neighbor_label)
+- `empty_cells`: 빈 셀 + neighbor_label 추론 (왼쪽 셀 우선, 위쪽 셀 차순위)
+- `suggested_fields`: 라벨 추론 성공한 빈 셀만 — `[{"label":"매출액(백만원)", "row":4, "col":2}, ...]` AI 가 즉시 사용자에게 "어떤 정보가 필요한가" 물어볼 수 있는 단서.
+
 ## HWPX 파일 수정 시 필수 주의사항
 
 > **적용 범위**: 이 절은 **경로 A (Python + lxml)** 에 한정. 경로 B (Rust + rhwp) 는 IR 단계에서 rhwp 가 처리하므로 이 함정들에 노출되지 않음.

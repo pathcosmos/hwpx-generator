@@ -1,5 +1,60 @@
 # Changelog
 
+## [2026-04-30] AI 통합 진입점 추가 (Skill + MCP 서버 + 분석 강화)
+
+경로 B (Rust+rhwp) 위에 AI 가 양식을 분석하고 사용자에게 필요 정보를 제안한 후 콘텐츠를 자동 생성·삽입하는 통합 진입점을 도입.
+
+### 분석 강화 (`analyze_template` 확장)
+
+`hwp-automate-py/src/lib.rs` 의 `analyze_template` 결과에 표 단위 상세 추가:
+
+- `cells`: 모든 셀 (row, col, text, is_empty, neighbor_label)
+- `empty_cells`: 빈 셀 목록 + 라벨 추론
+- `suggested_fields`: 라벨 추론 성공한 빈 셀만 — AI 가 즉시 "어떤 정보가 필요한가" 파악
+
+`find_neighbor_label()` 헬퍼: 같은 행 왼쪽 셀 우선(한국 양식의 라벨-값 가로 페어), 같은 열 위쪽 차순위.
+
+### Claude Code Skill — `fill-hwp`
+
+새 파일들:
+- `.claude/skills/fill-hwp/SKILL.md` — multi-turn playbook (분석 → 필요 정보 질문 → 채우기 → 검증)
+- `.claude/hooks/hwp-fill-verify.py` — PostToolUse hook (fill 명령 후 출력 파일 자동 확인)
+- `.claude/settings.json` — hook 등록
+
+Claude Code 사용자가 `/fill-hwp 양식.hwp` 한 명령으로 즉시 양식 채우기 시작.
+
+### MCP 서버 — `mcp_server.py`
+
+새 파일: `hwp-automate-py/mcp_server.py` — FastMCP stdio 서버. Claude Desktop / Claude Code / Cursor 등 MCP 호환 클라이언트에서 사용 가능.
+
+5 개 tool 노출: `analyze_form`, `preview_form_structure`, `fill_form`, `fill_form_from_data`, `verify_output`.
+
+`pyproject.toml` 변경:
+- `[project.optional-dependencies]` 에 `mcp = ["mcp[cli]>=1.2.0; python_version >= '3.10'"]` 추가
+- `[tool.pytest.ini_options]` 명시 (testpaths)
+- requires-python 은 3.9 유지 (mcp 만 3.10+ 조건부)
+
+### 변경 통계
+
+| 영역 | 변경 |
+|---|---|
+| `hwp-automate-py/src/lib.rs` | +69 / -7 (analyze 강화 + find_neighbor_label) |
+| `hwp-automate-py/mcp_server.py` | +245 (신규) |
+| `hwp-automate-py/pyproject.toml` | +8 (mcp optional, pytest config) |
+| `.claude/skills/fill-hwp/SKILL.md` | +200 (신규 Skill) |
+| `.claude/hooks/hwp-fill-verify.py` | +90 (신규 hook) |
+| `.claude/settings.json` | +14 (신규) |
+| `CLAUDE.md` | +60 (AI 통합 진입점 섹션) |
+
+### 검증
+
+- 기존 SVG 회귀 3 testcase 통과 그대로
+- 실 양식 (YCP/코리녹스) fill_template 회귀 통과
+- 강화된 analyze_template 가 YCP 기본정보 표의 빈 셀 6 개에 대해 라벨 (업종명/주생산품/매출액/영업이익/수출액/부채비율) 모두 정확 추론
+- MCP 서버 5 tool 모두 등록·in-process 호출 검증
+
+---
+
 ## [2026-04-29 #2] V1 실 양식 검증 + BinData 보존 우회 + 상세 Acknowledgement
 
 실 사업신청서 양식 (35MB / 54MB) 으로 검증하면서 발견한 두 가지 한계를 수정하고, 상세 출처 표기를 추가.

@@ -7,6 +7,12 @@ output_*.hwpx
 tests/output_*
 _bridge_tmp.py
 *.tmp
-.claude/
+# Claude Code 로컬 세션·사용자별 설정만 무시.
+# 공유 자산 (skill, hook, settings.json, agents, plugin) 은 트래킹.
+.claude/settings.local.json
+.claude/.local-state/
+.claude/projects/
+.claude/cache/
+.claude/.bin/
 ref/
 to-do-documents/
