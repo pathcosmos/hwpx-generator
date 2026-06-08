@@ -40,12 +40,70 @@ JSON Input → field_mapper.py → hwpx_editor.py (XML 직접 수정, WSL)
 | 모듈 | 환경 | 역할 |
 |------|------|------|
 | `src/generate_hwpx.py` | WSL | 메인 CLI 파이프라인 |
+| `src/document_pipeline.py` | WSL | 동국산업 산출물 운영 CLI. COM health, batch inspect/convert, fill-cells, PDF 검증 |
 | `src/bridge.py` | WSL | WSL↔Windows 브릿지. 인라인 스크립트를 Windows Python으로 실행 |
 | `src/hwp_com.py` | **Windows only** | 한컴오피스 COM 자동화 (pywin32). WSL에서 import 불가 |
 | `src/hwpx_editor.py` | WSL | HWPX ZIP 내부 section0.xml 수정 (lxml) |
 | `src/field_mapper.py` | WSL | JSON 입력 → (row, col) 셀 좌표 매핑 |
 | `src/pdf_compare.py` | WSL | PDF SSIM + 텍스트 비교 |
 | `src/extract_template.py` | WSL | HWPX 구조 분석 + 템플릿 설정 초안 생성 |
+
+## 동국산업 산출물 운영 CLI (2026-06-08 추가)
+
+`src/document_pipeline.py` 는 현재 동국산업 자율형공장 산출물 자동화를 위한 경로 A 전용 운영 CLI다. 범용 편집 엔진이 아니라 **현재 산출물의 점검/변환/채우기/검증**에 초점을 둔다.
+
+기본 문서 루트:
+
+```bash
+../동국산업_자율형공장_중간산출물_문서
+```
+
+### 명령
+
+| 명령 | 용도 |
+|------|------|
+| `health` | Windows Python, pywin32, 한글 COM, `Hwp.exe` 전후 프로세스 수 확인 |
+| `cleanup-com` | `Hwp.exe` 목록 조회. `--kill` 지정 시에만 강제 종료 |
+| `inspect` | 단일 HWP/HWPX inspect |
+| `convert` | 단일 HWP/HWPX 변환 |
+| `batch-inspect` | 최상위 `*.hwp` + `result/*.hwpx` 일괄 점검 |
+| `batch-convert` | 전체 문서 일괄 변환. 기본 출력 `result/batch_check/` |
+| `fill-cell` | HWPX 단일 셀 채우기 |
+| `fill-cells` | 필드맵 + 데이터 JSON 으로 여러 셀 채우기 |
+| `verify-pdf` | PDF 페이지 수/텍스트 추출/선택 비교 |
+
+### 운영 원칙
+
+- 기존 산출물을 덮어쓰지 않는다. batch 출력은 별도 디렉토리에 둔다.
+- COM 브릿지는 Windows 접근 가능한 `/mnt/<drive>/...` 경로만 지원한다. `/tmp`는 사용하지 않는다.
+- `cleanup-com`은 기본 조회 전용이다. `--kill`이 있을 때만 `taskkill /IM Hwp.exe /F` 실행.
+- `fill-cells`는 적용 전 required 필드와 좌표를 검증한다.
+- PDF 검증은 기본적으로 파일 존재, 크기, 페이지 수, 텍스트 추출 가능 여부를 본다. SSIM은 선택 옵션이다.
+
+### 동국산업 필드맵
+
+`templates/dongkuk_reports/`:
+
+| 파일 | 대상 |
+|------|------|
+| `weekly_report.json` | `★17 SF-PM2 주간보고서 양식_V1.2.hwpx` |
+| `monthly_report.json` | `★18 SF-PM3 월간보고서 양식_V1.2.hwpx` |
+| `meeting_minutes.json` | `★19 SF-PM4 회의록 양식_V1.1.hwpx` |
+
+필드맵은 `form_id`, `template_path`, `fields[]`를 가진다. 각 field 는 `name`, `table`, `row`, `col`, `description`, `required`를 포함한다.
+
+### 우선순위 판단
+
+현재 프로젝트에서는 다음 판단을 유지한다.
+
+| 항목 | 판단 |
+|------|------|
+| 문서 변환, PDF 생성, 기존 HWP/HWPX 양식 채우기 | 충분 |
+| 복잡한 서식 보존 | COM 덕분에 충분 |
+| 완전한 범용 HWP/HWPX 편집 엔진 | 부족하지만 이번 범위 제외 |
+| 현재 프로젝트 산출물 자동화 | COM 중심으로 충분 |
+
+작업 우선순위는 `COM 안정화 → 전체 문서 일괄 점검/변환 → 필드맵 → batch 채우기 → PDF 검증`이다.
 
 ## Rust + rhwp 경로 (크로스플랫폼, COM 불필요)
 
@@ -314,12 +372,17 @@ HWPX XML은 12개 이상의 네임스페이스를 사용한다. `xml.etree.Eleme
 
 ### 좀비 프로세스
 
-COM 자동화 중 오류 발생 시 `Hwp.exe`가 백그라운드에 남을 수 있다. 파일 잠금으로 이어져 `PermissionError`를 유발한다.
+COM 자동화 중 오류 발생 시 `Hwp.exe`가 백그라운드에 남을 수 있다. 파일 잠금으로 이어져 `PermissionError`를 유발한다. 2026-06-08 이후 `bridge.py`는 COM 작업 전후 `Hwp.exe` 목록과 개수를 결과 JSON에 포함한다.
 
 ```bash
-# 좀비 프로세스 정리
-taskkill.exe /F /IM Hwp.exe
+# 조회만 수행
+python3 src/document_pipeline.py cleanup-com --json
+
+# 명시적으로만 강제 종료
+python3 src/document_pipeline.py cleanup-com --kill
 ```
+
+주의: `cleanup-com`은 기본 조회 전용이다. `--kill`이 있어야 실제 종료한다.
 
 ### 타임아웃
 
@@ -375,6 +438,10 @@ templates/
   cloud_integrated/        # 기본 템플릿 (test_01.hwpx용)
     template.json          # 메타 정보 + 찾아바꾸기 매핑
     field_map.json         # 커버 표 셀 좌표 매핑
+  dongkuk_reports/         # 동국산업 주간/월간/회의록 운영 필드맵
+    weekly_report.json
+    monthly_report.json
+    meeting_minutes.json
   새_양식/                 # 새 템플릿 추가 시
     template.json
     field_map.json
@@ -394,11 +461,17 @@ XML 셀 채우기 좌표 매핑. `entity_blocks`(기관 정보)와 `company_list
 ## 테스트
 
 ```bash
-# HwpxEditor 단위 테스트 (11개, WSL에서 실행)
-python3 -m pytest tests/test_hwpx_editor.py -v
+# HWPX 편집기 + 동국산업 산출물 smoke test
+pytest -q tests/test_current_hwpx_pipeline.py tests/test_hwpx_editor.py
+
+# 2026-06-08 현재 검증 결과
+# 12 passed, 14 skipped
 
 # COM 모듈 테스트 (Windows Python에서만 실행 가능)
 # tests/test_hwp_com_module.py — WSL에서는 sys.exit(1)로 중단됨
+
+# COM 통합 smoke test 활성화
+RUN_HWP_COM_TESTS=1 pytest -q tests/test_current_hwpx_pipeline.py
 
 # 전체 통합 테스트 (WSL, Windows 한컴오피스 필요)
 python3 src/generate_hwpx.py \
@@ -410,14 +483,28 @@ python3 src/generate_hwpx.py \
 
 **주의**: `python3 -m pytest tests/ -v`로 전체 테스트를 실행하면 `test_hwp_com_module.py`가 Windows 전용이므로 `sys.exit(1)`로 프로세스가 종료된다. **WSL에서는 반드시 테스트 파일을 개별 지정**해야 한다.
 
+`tests/test_current_hwpx_pipeline.py`는 현재 `result/*.hwpx` 3개 패키지 무결성, HWPX 표 인벤토리, 임시 복사본 셀 수정, `batch-inspect --no-com`, `fill-cells`, 기존 PDF 검증을 포함한다.
+
 ## 빠른 명령어 참고
 
 ```bash
+# 운영 CLI help
+python3 src/document_pipeline.py --help
+
+# COM health + Hwp.exe 프로세스 리포트
+python3 src/document_pipeline.py health --json
+
+# 동국산업 result/*.hwpx HWPX 패키지 일괄 점검
+python3 src/document_pipeline.py batch-inspect --no-com --no-root-hwp --json
+
+# Hwp.exe 조회만 수행
+python3 src/document_pipeline.py cleanup-com --json
+
 # HWPX ZIP 구조 확인
 python3 -c "import zipfile; z = zipfile.ZipFile('ref/test_01.hwpx'); print(z.namelist())"
 
-# 좀비 한글 프로세스 정리
-taskkill.exe /F /IM Hwp.exe
+# 좀비 한글 프로세스 명시 정리
+python3 src/document_pipeline.py cleanup-com --kill
 
 # 새 템플릿 구조 분석
 python3 src/extract_template.py --hwpx ref/새양식.hwpx --all-tables

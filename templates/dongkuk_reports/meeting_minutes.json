@@ -1,0 +1,71 @@
+{
+  "form_id": "dongkuk_meeting_minutes",
+  "template_path": "../동국산업_자율형공장_중간산출물_문서/result/★19 SF-PM4 회의록 양식_V1.1.hwpx",
+  "description": "동국산업 자율형공장 회의록 셀 채우기 필드맵. 기본 대상은 첫 번째 회의록 표(table=1)이다.",
+  "fields": [
+    {
+      "name": "meeting_date",
+      "table": 1,
+      "row": 0,
+      "col": 1,
+      "description": "1. 일시",
+      "required": true
+    },
+    {
+      "name": "meeting_place",
+      "table": 1,
+      "row": 1,
+      "col": 1,
+      "description": "2. 장소",
+      "required": true
+    },
+    {
+      "name": "meeting_host",
+      "table": 1,
+      "row": 2,
+      "col": 1,
+      "description": "3. 주최자",
+      "required": true
+    },
+    {
+      "name": "meeting_agenda",
+      "table": 1,
+      "row": 3,
+      "col": 1,
+      "description": "4. 안건",
+      "required": true
+    },
+    {
+      "name": "meeting_content",
+      "table": 1,
+      "row": 4,
+      "col": 0,
+      "description": "5. 회의내용",
+      "required": true
+    },
+    {
+      "name": "meeting_result",
+      "table": 1,
+      "row": 5,
+      "col": 0,
+      "description": "6. 회의결과(합의사항)",
+      "required": false
+    },
+    {
+      "name": "meeting_notes",
+      "table": 1,
+      "row": 6,
+      "col": 0,
+      "description": "7. 특이사항",
+      "required": false
+    },
+    {
+      "name": "meeting_attendees",
+      "table": 1,
+      "row": 7,
+      "col": 0,
+      "description": "8. 참석자",
+      "required": false
+    }
+  ]
+}

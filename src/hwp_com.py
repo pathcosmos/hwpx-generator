@@ -31,6 +31,29 @@ FORMAT_PDF = "PDF"
 FORMAT_HTML = "HTML"
 FORMAT_TEXT = "TEXT"
 
+SUPPORTED_SAVE_FORMATS = {
+    FORMAT_HWP,
+    FORMAT_HWPX,
+    FORMAT_PDF,
+    FORMAT_HTML,
+    FORMAT_TEXT,
+}
+
+
+def _format_for_path(filepath):
+    """Return the COM open/save format implied by a document path."""
+    ext = os.path.splitext(filepath)[1].lower()
+    return FORMAT_HWPX if ext == ".hwpx" else FORMAT_HWP
+
+
+def _normalize_save_format(format):
+    """Normalize and validate a Hangul COM SaveAs format string."""
+    fmt = str(format).upper()
+    if fmt not in SUPPORTED_SAVE_FORMATS:
+        supported = ", ".join(sorted(SUPPORTED_SAVE_FORMATS))
+        raise ValueError(f"Unsupported HWP SaveAs format: {format!r} ({supported})")
+    return fmt
+
 
 class HwpController:
     """한글 워드프로세서 COM 제어 클래스"""
@@ -85,9 +108,25 @@ class HwpController:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"File not found: {filepath}")
 
-        ext = os.path.splitext(filepath)[1].lower()
-        fmt = "HWPX" if ext == ".hwpx" else "HWP"
+        fmt = _format_for_path(filepath)
         return self._hwp.Open(filepath, fmt, "")
+
+    def open_checked(self, filepath):
+        """Open a document and raise a path-rich error on failure.
+
+        Returns:
+            dict: opened document metadata.
+        """
+        filepath = os.path.abspath(filepath)
+        fmt = _format_for_path(filepath)
+        ok = self.open(filepath)
+        if not ok:
+            raise RuntimeError(f"Failed to open {fmt} document: {filepath}")
+        return {
+            "path": filepath,
+            "format": fmt,
+            "pages": self.get_page_count(),
+        }
 
     def save(self, filepath=None):
         """현재 문서 저장
@@ -97,12 +136,10 @@ class HwpController:
         """
         if filepath:
             filepath = os.path.abspath(filepath)
-            ext = os.path.splitext(filepath)[1].lower()
-            fmt = "HWPX" if ext == ".hwpx" else "HWP"
-            self._hwp.SaveAs(filepath, fmt, "")
+            fmt = _format_for_path(filepath)
+            return self._hwp.SaveAs(filepath, fmt, "")
         else:
-            self._hwp.Save()
-
+            return self._hwp.Save()
     def save_as(self, filepath, format="HWPX"):
         """다른 형식으로 저장
 
@@ -111,15 +148,62 @@ class HwpController:
             format: 저장 형식 ("HWPX", "HWP", "PDF", "HTML", "TEXT")
         """
         filepath = os.path.abspath(filepath)
-        self._hwp.SaveAs(filepath, format, "")
+        fmt = _normalize_save_format(format)
+        return self._hwp.SaveAs(filepath, fmt, "")
 
+    def save_as_checked(self, filepath, format="HWPX"):
+        """Save and verify that a non-empty output file was created."""
+        filepath = os.path.abspath(filepath)
+        fmt = _normalize_save_format(format)
+        parent = os.path.dirname(filepath)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        self.save_as(filepath, fmt)
+        if not os.path.exists(filepath):
+            raise RuntimeError(f"Failed to save {fmt}: output not found: {filepath}")
+        size = os.path.getsize(filepath)
+        if size <= 0:
+            raise RuntimeError(f"Failed to save {fmt}: output is empty: {filepath}")
+        return {
+            "path": filepath,
+            "format": fmt,
+            "bytes": size,
+        }
     def save_as_pdf(self, filepath):
         """PDF로 저장 (편의 메서드)
 
         Args:
             filepath: PDF 파일 저장 경로
         """
-        self.save_as(filepath, FORMAT_PDF)
+        return self.save_as(filepath, FORMAT_PDF)
+
+    def inspect_document(self, filepath, include_controls=False):
+        """Open a document and return basic metadata.
+
+        Args:
+            filepath: HWP/HWPX path.
+            include_controls: True이면 HeadCtrl 기반 컨트롤 개수도 반환.
+        """
+        info = self.open_checked(filepath)
+        if include_controls:
+            info["controls"] = self.get_controls()
+        return info
+
+    def convert_document(self, input_path, output_path, format):
+        """Open a document and save it in another format.
+
+        Args:
+            input_path: source HWP/HWPX path.
+            output_path: destination path.
+            format: one of HWP/HWPX/PDF/HTML/TEXT.
+        """
+        opened = self.open_checked(input_path)
+        saved = self.save_as_checked(output_path, format)
+        return {
+            "input": opened,
+            "output": saved,
+        }
 
     def close(self):
         """현재 문서 닫기 (저장 안함)"""

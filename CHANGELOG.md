@@ -1,5 +1,182 @@
 # Changelog
 
+## [2026-06-08] 동국산업 HWP/HWPX 운영 파이프라인 보강
+
+WSL2 + Windows 한글 COM 환경에서 동국산업 자율형공장 산출물을 안정적으로 점검·변환·채우기 위해 경로 A(Python+lxml+COM)를 운영용으로 확장했다. 이번 변경은 `hwpx-generator` 루트 저장소 범위에 한정하며, `hwp-automate-*` 하위 프로젝트 문서는 수정하지 않았다.
+
+### 핵심 판단
+
+| 항목 | 판단 |
+|------|------|
+| 문서 변환, PDF 생성, 기존 HWP/HWPX 양식 채우기 | 충분 — Windows 한글 COM 중심으로 진행 |
+| 복잡한 서식 보존 | 충분 — 한글 렌더링/SaveAs 엔진 활용 |
+| 완전한 범용 HWP/HWPX 편집 엔진 | 부족 — 현재 범위에서는 우선순위 제외 |
+| 현재 프로젝트 산출물 자동화 | COM 중심으로 충분 |
+
+진행 우선순위는 `COM 안정화 → 전체 문서 일괄 점검/변환 → 3개 양식 필드맵 → batch 셀 채우기 → PDF 검증`으로 확정.
+
+### 신규 운영 CLI — `src/document_pipeline.py`
+
+동국산업 산출물 운영을 위한 새 CLI를 추가했다.
+
+| 명령 | 용도 |
+|------|------|
+| `health` | Windows Python, pywin32, 한글 COM 사용 가능 여부와 `Hwp.exe` 전후 프로세스 수 확인 |
+| `cleanup-com` | 현재 `Hwp.exe` 목록 조회. `--kill` 지정 시에만 강제 종료 |
+| `inspect` | 단일 HWP/HWPX 열기, 페이지 수, HWPX 패키지/표 구조 확인 |
+| `convert` | 단일 HWP/HWPX 를 HWPX/HWP/PDF/HTML/TEXT 로 변환 |
+| `batch-inspect` | 최상위 `*.hwp` 와 `result/*.hwpx` 전체 점검 리포트 생성 |
+| `batch-convert` | 전체 문서 세트를 PDF/HWPX 로 일괄 변환. 기본 출력은 `result/batch_check/` |
+| `fill-cell` | HWPX 단일 셀 수정 후 선택적으로 PDF 생성 |
+| `fill-cells` | 필드맵 JSON + 데이터 JSON 으로 여러 표/여러 셀 일괄 채우기 |
+| `verify-pdf` | PDF 존재, 크기, 페이지 수, 텍스트 추출 가능 여부 확인. 선택적으로 참조 PDF 비교 |
+
+기본 문서 루트는 `../동국산업_자율형공장_중간산출물_문서`로 설정했다.
+
+### COM 안정화 (`src/bridge.py`, `src/hwp_com.py`)
+
+`src/hwp_com.py`:
+- `_format_for_path()`, `_normalize_save_format()` 추가
+- `open_checked()`, `save_as_checked()` 추가
+- `inspect_document()`, `convert_document()` 추가
+- SaveAs 결과 파일 존재/크기 검증 추가
+- 기존 `open()`, `save()`, `save_as()` API는 유지
+
+`src/bridge.py`:
+- `check_com_available()` 추가
+- `inspect_document()` 추가
+- `convert_document()` 추가
+- `list_hwp_processes()` 추가
+- `cleanup_hwp_processes(kill=False)` 추가
+- Windows inline script 실행 결과를 JSON으로 파싱하는 `_run_inline_script_json()` 추가
+- COM 작업 전후 `Hwp.exe` 프로세스 목록/개수 기록
+- Windows stdout/stderr 한글 경로 디코딩 보정 (`utf-8` → `cp949` fallback)
+- `/tmp` 같은 Windows 접근 불가 경로는 traceback 대신 명시적 실패 결과 반환
+
+주의: `cleanup-com`은 기본적으로 조회만 수행한다. `--kill`을 명시한 경우에만 `taskkill /IM Hwp.exe /F`를 실행한다.
+
+### HWPX 편집기 보강 (`src/hwpx_editor.py`)
+
+HWPX 직접 XML 편집은 계속 안전한 셀 텍스트 치환 중심으로 유지하되, 점검 기능을 추가했다.
+
+- `inspect_package(hwpx_path)` 추가
+  - `mimetype` 존재/값/첫 엔트리/압축 방식 확인
+  - `Contents/section*.xml` 파싱 확인
+  - section 수, 표 수, 문단 수 반환
+  - 오류/경고 목록 반환
+- `validate_package()` 추가
+- `inspect_tables(include_empty=True)` 추가
+  - 표 인덱스, 행/열 수, 실제 셀 수, 빈 셀 후보 반환
+- `set_cell_text_by_index(table_index, row, col, text)` 추가
+- `_cell_text()`, `_int_attr()` 보조 함수 추가
+
+### 동국산업 보고서 필드맵 추가
+
+새 디렉토리: `templates/dongkuk_reports/`
+
+| 파일 | 대상 |
+|------|------|
+| `weekly_report.json` | `★17 SF-PM2 주간보고서 양식_V1.2.hwpx` |
+| `monthly_report.json` | `★18 SF-PM3 월간보고서 양식_V1.2.hwpx` |
+| `meeting_minutes.json` | `★19 SF-PM4 회의록 양식_V1.1.hwpx` |
+
+필드맵 형식:
+- `form_id`
+- `template_path`
+- `description`
+- `fields[]`
+  - `name`
+  - `table`
+  - `row`
+  - `col`
+  - `description`
+  - `required`
+
+현재 필드 범위:
+- 주간보고서: 금주 실적, 차주 계획, 위험/이슈 1~2
+- 월간보고서: 금월 실적, 차월 계획, 위험/이슈 1~2
+- 회의록: 첫 번째 회의록 표의 일시, 장소, 주최자, 안건, 회의내용, 결과, 특이사항, 참석자
+
+### Batch 셀 채우기 정책
+
+`fill-cells`는 필드맵과 데이터 JSON을 사용한다.
+
+입력 데이터 형식:
+
+```json
+{
+  "current_week_results": "금주 실적 내용",
+  "next_week_plan": "차주 계획 내용"
+}
+```
+
+적용 정책:
+- `required=true` 필드가 누락되면 적용 전 실패
+- 선택 필드 누락은 skip
+- 좌표가 없거나 셀이 존재하지 않으면 적용 전/적용 중 실패
+- 출력 HWPX 패키지 검증 후, `--pdf` 지정 시 COM으로 PDF 생성
+- `--verify-pdf` 지정 시 PDF 페이지 수/텍스트 추출까지 확인
+
+### PDF 검증
+
+`verify-pdf` 명령 추가:
+- PDF 파일 존재 확인
+- 파일 크기 확인
+- PyMuPDF 기반 페이지 수 확인
+- 텍스트 추출 가능 여부 확인
+- `--compare` 지정 시 참조 PDF와 페이지 수 비교
+- `--ssim` 지정 시 기존 `pdf_compare.py`를 통한 SSIM/text 비교 수행
+
+### 테스트 추가/수정
+
+새 파일: `tests/test_current_hwpx_pipeline.py`
+
+검증 항목:
+- `result/*.hwpx` 3개 HWPX 패키지 무결성
+- HWPX 표 인벤토리 조회
+- 임시 복사본 셀 수정 후 재파싱
+- `document_pipeline.py inspect --no-com`
+- `batch-inspect --no-com --no-root-hwp`
+- `fill-cells` dry-run
+- `fill-cells` 임시 HWPX 적용
+- 기존 PDF 검증
+- `RUN_HWP_COM_TESTS=1`일 때 Windows 한글 COM health, HWP→HWPX, HWP→PDF 변환
+
+`tests/test_hwpx_editor.py`:
+- `ref/test_01.hwpx`가 현재 checkout에 없을 때 skip하도록 보정
+
+검증 결과:
+
+```bash
+python3 -m py_compile src/hwp_com.py src/bridge.py src/hwpx_editor.py src/document_pipeline.py tests/test_current_hwpx_pipeline.py tests/test_hwpx_editor.py
+pytest -q tests/test_current_hwpx_pipeline.py tests/test_hwpx_editor.py
+# 12 passed, 14 skipped
+```
+
+실제 COM smoke:
+- `python3 src/document_pipeline.py health --json` 성공
+- `python3 src/document_pipeline.py cleanup-com --json` 조회 성공 (`--kill` 미사용)
+- `/mnt/d/...` 임시 폴더에서 `batch-convert --format pdf --verify-pdf` 성공
+- HWP 1개 → PDF 변환 성공, PDF 페이지 수/텍스트 추출 검증 성공
+- 변환 중 `Hwp.exe` 프로세스 수 증가 없음
+
+### 변경 파일 요약
+
+| 파일/디렉토리 | 변경 |
+|---------------|------|
+| `src/document_pipeline.py` | 신규 운영 CLI |
+| `src/bridge.py` | COM JSON 브릿지, 프로세스 리포트, cleanup, 디코딩 보정 |
+| `src/hwp_com.py` | checked open/save/inspect/convert API |
+| `src/hwpx_editor.py` | HWPX 패키지/표 점검 API |
+| `templates/dongkuk_reports/` | 동국산업 3개 양식 필드맵 |
+| `tests/test_current_hwpx_pipeline.py` | 신규 smoke/integration 테스트 |
+| `tests/test_hwpx_editor.py` | 누락 fixture skip 보정 |
+| `README.md` | 운영 CLI/필드맵/테스트 문서화 |
+| `CLAUDE.md` | 작업자용 운영 규칙 업데이트 |
+| `CHANGELOG.md` | 본 변경 내역 기록 |
+
+---
+
 ## [2026-04-30] AI 통합 진입점 추가 (Skill + MCP 서버 + 분석 강화)
 
 경로 B (Rust+rhwp) 위에 AI 가 양식을 분석하고 사용자에게 필요 정보를 제안한 후 콘텐츠를 자동 생성·삽입하는 통합 진입점을 도입.

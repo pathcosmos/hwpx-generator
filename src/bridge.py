@@ -7,9 +7,41 @@ import subprocess
 import json
 import os
 import sys
+import tempfile
 import zipfile
-
 WIN_PYTHON = "python"  # cmd.exe 경유로 실행 — PATH에서 해석됨
+
+HWP_PROCESS_HELPER = r'''
+def list_hwp_processes():
+    import csv
+    import subprocess
+    import io
+
+    proc = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq Hwp.exe", "/FO", "CSV", "/NH"],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    processes = []
+    text = (proc.stdout or "").strip()
+    if not text or "INFO:" in text:
+        return processes
+    for row in csv.reader(io.StringIO(text)):
+        if len(row) < 2:
+            continue
+        try:
+            pid = int(row[1])
+        except ValueError:
+            pid = None
+        processes.append({
+            "image": row[0],
+            "pid": pid,
+            "session": row[2] if len(row) > 2 else "",
+            "memory": row[4] if len(row) > 4 else "",
+        })
+    return processes
+'''
 
 
 def wsl_to_win_path(wsl_path):
@@ -47,6 +79,16 @@ def win_to_wsl_path(win_path):
     raise ValueError(f"Cannot convert path to WSL format: {win_path}")
 
 
+def _decode_windows_output(data):
+    """Decode stdout/stderr from Windows console tools."""
+    for encoding in ("utf-8", "cp949"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def run_com_script(script_path, *args, timeout=120):
     """Windows Python으로 COM 스크립트 실행
 
@@ -70,9 +112,244 @@ def run_com_script(script_path, *args, timeout=120):
         timeout=timeout,
     )
     # Decode with fallback for mixed encodings (cp949/utf-8)
-    result.stdout = result.stdout.decode("utf-8", errors="replace")
-    result.stderr = result.stderr.decode("utf-8", errors="replace")
+    result.stdout = _decode_windows_output(result.stdout)
+    result.stderr = _decode_windows_output(result.stderr)
     return result
+
+
+def check_com_available(timeout=60):
+    """Windows Python, pywin32, Hangul COM 사용 가능 여부를 확인한다.
+
+    Returns:
+        dict: {"ok": bool, "windows_python": str, "pywin32": bool,
+               "hwp_com": bool, "error": str?}
+    """
+    script = HWP_PROCESS_HELPER + '''\
+import json
+import os
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+result = {
+    "ok": False,
+    "windows_python": sys.version,
+    "pywin32": False,
+    "hwp_com": False,
+    "hwp_processes_before": list_hwp_processes(),
+}
+controller = None
+try:
+    import win32com.client as win32
+    result["pywin32"] = True
+    from src.hwp_com import HwpController
+    controller = HwpController(visible=False)
+    result["hwp_com"] = True
+    result["ok"] = True
+except Exception as exc:
+    result["error"] = f"{type(exc).__name__}: {exc}"
+    result["traceback"] = traceback.format_exc()
+finally:
+    if controller is not None:
+        try:
+            controller.quit()
+        except Exception:
+            pass
+    time.sleep(1)
+    result["hwp_processes_after"] = list_hwp_processes()
+    result["hwp_process_count_before"] = len(result["hwp_processes_before"])
+    result["hwp_process_count_after"] = len(result["hwp_processes_after"])
+
+print("RESULT_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+'''
+    return _run_inline_script_json(script, timeout=timeout)
+
+
+def inspect_document(path, timeout=120, include_controls=False):
+    """HWP/HWPX 문서를 COM으로 열고 기본 메타데이터를 반환한다.
+
+    Args:
+        path: WSL 경로 (/mnt/...).
+        timeout: 실행 제한 시간.
+        include_controls: True이면 컨트롤 개수도 포함한다.
+
+    Returns:
+        dict: {"ok": bool, "input": str, "format": str, "pages": int, ...}
+    """
+    try:
+        win_path = wsl_to_win_path(path)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "input_wsl": os.path.abspath(path),
+            "error": str(exc),
+        }
+    include_controls_py = "True" if include_controls else "False"
+    script = HWP_PROCESS_HELPER + f'''\
+import json
+import os
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.hwp_com import HwpController
+
+result = {{
+    "ok": False,
+    "input": r"{win_path}",
+    "hwp_processes_before": list_hwp_processes(),
+}}
+hwp = None
+try:
+    hwp = HwpController(visible=False)
+    info = hwp.inspect_document(r"{win_path}", include_controls={include_controls_py})
+    result.update(info)
+    result["ok"] = True
+except Exception as exc:
+    result["error"] = f"{{type(exc).__name__}}: {{exc}}"
+    result["traceback"] = traceback.format_exc()
+finally:
+    if hwp is not None:
+        hwp.quit()
+    time.sleep(1)
+    result["hwp_processes_after"] = list_hwp_processes()
+    result["hwp_process_count_before"] = len(result["hwp_processes_before"])
+    result["hwp_process_count_after"] = len(result["hwp_processes_after"])
+
+print("RESULT_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+'''
+    result = _run_inline_script_json(script, timeout=timeout)
+    result.setdefault("input_wsl", os.path.abspath(path))
+    return result
+
+
+def convert_document(input_path, output_path, format="PDF", timeout=300):
+    """HWP/HWPX 문서를 COM으로 열고 지정 형식으로 저장한다.
+
+    Args:
+        input_path: 입력 HWP/HWPX WSL 경로.
+        output_path: 출력 WSL 경로.
+        format: "PDF", "HWPX", "HWP", "HTML", "TEXT".
+        timeout: 실행 제한 시간.
+
+    Returns:
+        dict: {"ok": bool, "input": {...}, "output": {...}, ...}
+    """
+    fmt = str(format).upper()
+    if os.path.dirname(output_path):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    try:
+        win_input = wsl_to_win_path(input_path)
+        win_output = wsl_to_win_path(output_path)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "input_wsl": os.path.abspath(input_path),
+            "output_wsl": os.path.abspath(output_path),
+            "format": fmt,
+            "error": str(exc),
+        }
+    script = HWP_PROCESS_HELPER + f'''\
+import json
+import os
+import sys
+import time
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from src.hwp_com import HwpController
+
+result = {{
+    "ok": False,
+    "input_path": r"{win_input}",
+    "output_path": r"{win_output}",
+    "format": "{fmt}",
+    "hwp_processes_before": list_hwp_processes(),
+}}
+hwp = None
+try:
+    hwp = HwpController(visible=False)
+    converted = hwp.convert_document(r"{win_input}", r"{win_output}", "{fmt}")
+    result.update(converted)
+    result["ok"] = True
+except Exception as exc:
+    result["error"] = f"{{type(exc).__name__}}: {{exc}}"
+    result["traceback"] = traceback.format_exc()
+finally:
+    if hwp is not None:
+        hwp.quit()
+    time.sleep(1)
+    result["hwp_processes_after"] = list_hwp_processes()
+    result["hwp_process_count_before"] = len(result["hwp_processes_before"])
+    result["hwp_process_count_after"] = len(result["hwp_processes_after"])
+
+print("RESULT_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+'''
+    result = _run_inline_script_json(script, timeout=timeout)
+    result.setdefault("input_wsl", os.path.abspath(input_path))
+    result.setdefault("output_wsl", os.path.abspath(output_path))
+    return result
+
+
+def list_hwp_processes(timeout=30):
+    """현재 Windows Hwp.exe 프로세스 목록을 반환한다."""
+    script = HWP_PROCESS_HELPER + '''\
+import json
+
+processes = list_hwp_processes()
+result = {
+    "ok": True,
+    "processes": processes,
+    "count": len(processes),
+}
+print("RESULT_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+'''
+    return _run_inline_script_json(script, timeout=timeout)
+
+
+def cleanup_hwp_processes(kill=False, timeout=60):
+    """Windows Hwp.exe 프로세스를 조회하거나 명시적으로 종료한다.
+
+    Args:
+        kill: False이면 조회만, True이면 taskkill /F 실행.
+        timeout: 실행 제한 시간.
+    """
+    kill_py = "True" if kill else "False"
+    script = HWP_PROCESS_HELPER + f'''\
+import json
+import subprocess
+
+result = {{
+    "ok": False,
+    "kill_requested": {kill_py},
+    "processes_before": list_hwp_processes(),
+}}
+if {kill_py} and result["processes_before"]:
+    proc = subprocess.run(
+        ["taskkill", "/IM", "Hwp.exe", "/F"],
+        capture_output=True,
+        text=True,
+        errors="replace",
+    )
+    result["taskkill"] = {{
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }}
+else:
+    result["taskkill"] = None
+
+result["processes_after"] = list_hwp_processes()
+result["count_before"] = len(result["processes_before"])
+result["count_after"] = len(result["processes_after"])
+result["ok"] = (not {kill_py}) or result["count_after"] == 0
+print("RESULT_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+'''
+    return _run_inline_script_json(script, timeout=timeout)
 
 
 def fix_hwpx_for_pdf(input_hwpx, output_hwpx=None):
@@ -477,21 +754,23 @@ finally:
     return _run_inline_script(script, timeout=timeout)
 
 
-def _run_inline_script(script_code, timeout=120):
-    """인라인 Python 스크립트를 Windows Python으로 실행
+def _run_inline_script_capture(script_code, timeout=120):
+    """인라인 Python 스크립트를 Windows Python으로 실행하고 출력을 캡처한다.
 
     Args:
         script_code: 실행할 Python 코드
         timeout: 실행 제한 시간 (초)
 
     Returns:
-        bool: 성공 여부 (stdout에 "OK" 포함 시 True)
+        dict: returncode/stdout/stderr/timed_out/script_path
     """
-    # Write script to a temp file in the project directory (accessible from Windows)
+    # Windows Python이 접근 가능한 프로젝트 디렉토리에 임시 스크립트를 둔다.
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tmp_path = os.path.join(project_dir, "_bridge_tmp.py")
+    fd, tmp_path = tempfile.mkstemp(
+        prefix="_bridge_", suffix=".py", dir=project_dir, text=True
+    )
     try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(script_code)
 
         win_tmp = wsl_to_win_path(tmp_path)
@@ -504,23 +783,81 @@ def _run_inline_script(script_code, timeout=120):
 
         try:
             stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+            timed_out = False
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout_bytes, stderr_bytes = proc.communicate()
-            print("[bridge] Process timed out", file=sys.stderr)
-            return False
+            timed_out = True
 
-        stdout = stdout_bytes.decode("utf-8", errors="replace")
-        stderr = stderr_bytes.decode("utf-8", errors="replace")
+        stdout = _decode_windows_output(stdout_bytes)
+        stderr = _decode_windows_output(stderr_bytes)
 
-        if stdout:
-            print(f"[bridge] {stdout.strip()}")
-        if proc.returncode != 0:
-            print(f"[bridge] STDERR: {stderr}", file=sys.stderr)
-
-        return "OK" in stdout
+        return {
+            "returncode": proc.returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+            "timed_out": timed_out,
+            "script_path": tmp_path,
+        }
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+def _run_inline_script_json(script_code, timeout=120):
+    """Windows inline script 실행 결과에서 RESULT_JSON 라인을 파싱한다."""
+    capture = _run_inline_script_capture(script_code, timeout=timeout)
+    result = {
+        "ok": False,
+        "returncode": capture["returncode"],
+        "stdout": capture["stdout"],
+        "stderr": capture["stderr"],
+        "timed_out": capture["timed_out"],
+    }
+    if capture["timed_out"]:
+        result["error"] = f"Windows COM script timed out after {timeout}s"
+        return result
+
+    for line in capture["stdout"].splitlines():
+        if line.startswith("RESULT_JSON:"):
+            try:
+                parsed = json.loads(line[len("RESULT_JSON:"):])
+            except json.JSONDecodeError as exc:
+                result["error"] = f"Invalid RESULT_JSON: {exc}"
+                return result
+            parsed.setdefault("returncode", capture["returncode"])
+            parsed.setdefault("stdout", capture["stdout"])
+            parsed.setdefault("stderr", capture["stderr"])
+            parsed.setdefault("timed_out", capture["timed_out"])
+            if capture["returncode"] != 0 and parsed.get("ok"):
+                parsed["ok"] = False
+            return parsed
+
+    if capture["returncode"] != 0:
+        result["error"] = capture["stderr"] or capture["stdout"] or "COM script failed"
+    else:
+        result["error"] = "RESULT_JSON line not found in COM script output"
+    return result
+
+
+def _run_inline_script(script_code, timeout=120):
+    """인라인 Python 스크립트를 Windows Python으로 실행한다.
+
+    Returns:
+        bool: 성공 여부 (stdout에 "OK" 포함 시 True)
+    """
+    capture = _run_inline_script_capture(script_code, timeout=timeout)
+    if capture["timed_out"]:
+        print("[bridge] Process timed out", file=sys.stderr)
+        return False
+
+    stdout = capture["stdout"]
+    stderr = capture["stderr"]
+    if stdout:
+        print(f"[bridge] {stdout.strip()}")
+    if capture["returncode"] != 0:
+        print(f"[bridge] STDERR: {stderr}", file=sys.stderr)
+
+    return "OK" in stdout and capture["returncode"] == 0

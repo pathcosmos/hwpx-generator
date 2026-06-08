@@ -40,10 +40,94 @@ NAMESPACES = {
 }
 
 HP_NS = NAMESPACES['hp']
-
-
+SECTION_PATH_RE = re.compile(r'^Contents/section(\d+)\.xml$')
 class HwpxEditor:
     """HWPX ZIP 내부의 section0.xml을 수정하는 편집기."""
+
+    @staticmethod
+    def inspect_package(hwpx_path):
+        """HWPX ZIP 패키지와 section XML의 기본 무결성을 점검한다.
+
+        Args:
+            hwpx_path: HWPX 파일 경로
+
+        Returns:
+            dict: 패키지/섹션/표 개수와 오류·경고 목록
+        """
+        result = {
+            'path': os.path.abspath(hwpx_path),
+            'ok': False,
+            'errors': [],
+            'warnings': [],
+            'entry_count': 0,
+            'sections': [],
+            'section_count': 0,
+            'table_count': 0,
+            'paragraph_count': 0,
+            'mimetype': None,
+            'mimetype_first': False,
+            'mimetype_stored': False,
+            'section_details': [],
+        }
+
+        try:
+            with zipfile.ZipFile(hwpx_path, 'r') as zf:
+                infos = zf.infolist()
+                names = [info.filename for info in infos]
+                result['entry_count'] = len(names)
+
+                if not names:
+                    result['errors'].append('ZIP archive is empty')
+                    return result
+
+                if 'mimetype' not in names:
+                    result['errors'].append('mimetype entry missing')
+                else:
+                    info = zf.getinfo('mimetype')
+                    mimetype = zf.read('mimetype').decode('utf-8', errors='replace')
+                    result['mimetype'] = mimetype
+                    result['mimetype_first'] = names[0] == 'mimetype'
+                    result['mimetype_stored'] = info.compress_type == zipfile.ZIP_STORED
+                    if mimetype != 'application/hwp+zip':
+                        result['errors'].append(f'unexpected mimetype: {mimetype!r}')
+                    if not result['mimetype_first']:
+                        result['warnings'].append('mimetype is not the first ZIP entry')
+                    if not result['mimetype_stored']:
+                        result['warnings'].append('mimetype is not ZIP_STORED')
+
+                sections = [name for name in names if SECTION_PATH_RE.match(name)]
+                sections.sort(key=lambda n: int(SECTION_PATH_RE.match(n).group(1)))
+                result['sections'] = sections
+                result['section_count'] = len(sections)
+                if 'Contents/section0.xml' not in names:
+                    result['errors'].append('Contents/section0.xml entry missing')
+
+                for section_path in sections:
+                    try:
+                        root = etree.fromstring(zf.read(section_path))
+                    except etree.XMLSyntaxError as exc:
+                        result['errors'].append(f'{section_path} XML parse failed: {exc}')
+                        continue
+
+                    tables = root.findall('.//hp:tbl', NAMESPACES)
+                    paragraphs = root.findall('.//hp:p', NAMESPACES)
+                    result['table_count'] += len(tables)
+                    result['paragraph_count'] += len(paragraphs)
+                    result['section_details'].append({
+                        'path': section_path,
+                        'tables': len(tables),
+                        'paragraphs': len(paragraphs),
+                    })
+
+        except FileNotFoundError:
+            result['errors'].append(f'file not found: {hwpx_path}')
+        except zipfile.BadZipFile as exc:
+            result['errors'].append(f'bad zip file: {exc}')
+        except OSError as exc:
+            result['errors'].append(f'cannot read file: {exc}')
+
+        result['ok'] = not result['errors']
+        return result
 
     def __init__(self, hwpx_path):
         """HWPX 파일을 열고 section0.xml을 파싱한다.
@@ -66,6 +150,10 @@ class HwpxEditor:
         self._xml_decl = m.group(1) if m else HWPX_XML_DECL
 
         self.root = etree.fromstring(section_data)
+
+    def validate_package(self):
+        """현재 HWPX 파일의 패키지 무결성 점검 결과를 반환한다."""
+        return self.inspect_package(self.hwpx_path)
 
     def get_table(self, index=0):
         """N번째 hp:tbl 요소를 반환한다.
@@ -194,6 +282,67 @@ class HwpxEditor:
     def get_table_count(self):
         """문서 내 전체 테이블 수를 반환한다."""
         return len(self.root.findall('.//hp:tbl', NAMESPACES))
+
+    @staticmethod
+    def _cell_text(tc):
+        """Return concatenated text inside a table cell."""
+        texts = []
+        for t in tc.findall('.//hp:t', NAMESPACES):
+            if t.text:
+                texts.append(t.text)
+        return ''.join(texts)
+
+    @staticmethod
+    def _int_attr(elem, name, default=None):
+        value = elem.get(name)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    def inspect_tables(self, include_empty=True):
+        """section0.xml 내 표 크기와 빈 셀 후보를 반환한다.
+
+        Args:
+            include_empty: True이면 빈 셀 좌표를 포함한다.
+
+        Returns:
+            list[dict]: 표 인벤토리
+        """
+        result = []
+        tables = self.root.findall('.//hp:tbl', NAMESPACES)
+        for index, table in enumerate(tables):
+            cells = table.findall('.//hp:tc', NAMESPACES)
+            entry = {
+                'index': index,
+                'rows': self._int_attr(table, 'rowCnt'),
+                'cols': self._int_attr(table, 'colCnt'),
+                'cell_count': len(cells),
+                'empty_cells': [],
+            }
+            if include_empty:
+                for tc in cells:
+                    text = self._cell_text(tc).strip()
+                    if text:
+                        continue
+                    addr = tc.find('hp:cellAddr', NAMESPACES)
+                    if addr is None:
+                        continue
+                    row = self._int_attr(addr, 'rowAddr')
+                    col = self._int_attr(addr, 'colAddr')
+                    if row is not None and col is not None:
+                        entry['empty_cells'].append({'row': row, 'col': col})
+            result.append(entry)
+        return result
+
+    def set_cell_text_by_index(self, table_index, row_addr, col_addr, text):
+        """표 인덱스와 셀 좌표로 텍스트를 설정한다."""
+        table = self.get_table(table_index)
+        if table is None:
+            return False
+        return self.set_cell_text(table, row_addr, col_addr, text)
 
     def remove_memos(self):
         """문서 내 모든 MEMO(메모/주석) 필드를 제거한다.

@@ -1,0 +1,87 @@
+{
+  "form_id": "dongkuk_monthly_report",
+  "template_path": "../동국산업_자율형공장_중간산출물_문서/result/★18 SF-PM3 월간보고서 양식_V1.2.hwpx",
+  "description": "동국산업 자율형공장 월간보고서 셀 채우기 필드맵",
+  "fields": [
+    {
+      "name": "current_month_results",
+      "table": 1,
+      "row": 1,
+      "col": 0,
+      "description": "금 월 실 적 본문",
+      "required": true
+    },
+    {
+      "name": "next_month_plan",
+      "table": 1,
+      "row": 1,
+      "col": 1,
+      "description": "차 월 계 획 본문",
+      "required": true
+    },
+    {
+      "name": "risk1_no",
+      "table": 2,
+      "row": 1,
+      "col": 0,
+      "description": "위험/이슈 1번 번호",
+      "required": false
+    },
+    {
+      "name": "risk1_type",
+      "table": 2,
+      "row": 1,
+      "col": 1,
+      "description": "위험/이슈 1번 구분",
+      "required": false
+    },
+    {
+      "name": "risk1_content",
+      "table": 2,
+      "row": 1,
+      "col": 2,
+      "description": "위험/이슈 1번 내용",
+      "required": false
+    },
+    {
+      "name": "risk1_status",
+      "table": 2,
+      "row": 1,
+      "col": 3,
+      "description": "위험/이슈 1번 처리 현황",
+      "required": false
+    },
+    {
+      "name": "risk2_no",
+      "table": 2,
+      "row": 2,
+      "col": 0,
+      "description": "위험/이슈 2번 번호",
+      "required": false
+    },
+    {
+      "name": "risk2_type",
+      "table": 2,
+      "row": 2,
+      "col": 1,
+      "description": "위험/이슈 2번 구분",
+      "required": false
+    },
+    {
+      "name": "risk2_content",
+      "table": 2,
+      "row": 2,
+      "col": 2,
+      "description": "위험/이슈 2번 내용",
+      "required": false
+    },
+    {
+      "name": "risk2_status",
+      "table": 2,
+      "row": 2,
+      "col": 3,
+      "description": "위험/이슈 2번 처리 현황",
+      "required": false
+    }
+  ]
+}

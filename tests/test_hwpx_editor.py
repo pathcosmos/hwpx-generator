@@ -18,6 +18,8 @@ FORM_HWPX = os.path.join(_PROJECT_ROOT, 'form_to_fillout.hwpx')
 
 @pytest.fixture
 def editor():
+    if not os.path.exists(REF_HWPX):
+        pytest.skip('ref/test_01.hwpx not found')
     return HwpxEditor(REF_HWPX)
 
 
